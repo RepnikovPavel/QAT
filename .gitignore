@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / dist
+build/
+dist/
+*.egg
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data — never commit datasets, checkpoints or model artifacts
+data/
+datasets/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.parquet
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Editor / OS
+*.swp
+.vscode/
+.idea/
+.DS_Store
+*~
+
+# Logs / runtime
+*.log
+runs/
+wandb/
+mlruns/
