@@ -49,16 +49,21 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
             # out is (N, num_boxes, 5+nc): [xyxy, conf, classes...]
             pred = non_max_suppression(out, conf_thres, iou_thres,
                                        nc=nc, max_det=max_det)
-            # build target boxes per image
-            tg = targets_to_yolo(targets, img_size=args.img_size)  # (M,6) norm [img,cls,cxcywh]
+            # build target boxes per image in PIXEL xyxy (predictions decode to
+            # pixel xyxy, so we convert normalised cxcywh targets accordingly).
+            tg = targets_to_yolo(targets, img_size=args.img_size)  # norm cxcywh
             for i, det in enumerate(pred):
-                labels = tg[tg[:, 0] == i][:, 1:]  # (L,5) cls+xyxy
-                nl = labels.shape[0]
-                tcls = labels[:, 0].tolist() if nl else []
+                raw = tg[tg[:, 0] == i]  # (L,6) [img,cls,cx,cy,w,h] normalised
+                nl = raw.shape[0]
+                tcls = raw[:, 1].long().tolist() if nl else []
                 if nl:
-                    tbox = labels[:, 1:5]
+                    cx, cy, w, h = (raw[:, 2:6] * args.img_size).T
+                    tbox = torch.stack([cx - w / 2, cy - h / 2,
+                                        cx + w / 2, cy + h / 2], 1).to(device)
+                    labels_cls = raw[:, 1:2].to(device)
                 else:
                     tbox = torch.zeros((0, 4), device=device)
+                    labels_cls = torch.zeros((0, 1), device=device)
                 if det is None or len(det) == 0:
                     if nl:
                         stats.append((torch.zeros(0), torch.zeros(0),
@@ -74,7 +79,7 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                     iou = _iou_matrix(dbox, tbox)
                     # for each class
                     for c in torch.unique(torch.tensor(tcls, device=device)):
-                        ti = (labels[:, 0] == c).nonzero().view(-1)
+                        ti = (labels_cls[:, 0] == c).nonzero().view(-1)
                         di = (dcls == c).nonzero().view(-1)
                         if len(ti) and len(di):
                             m = iou[di][:, ti].cpu()
