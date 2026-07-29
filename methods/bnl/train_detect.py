@@ -75,10 +75,11 @@ def targets_to_yolo(targets, img_size=640):
 def load_pretrained_body(model: BNLYOLOv5, ckpt_path: str, verbose: bool = True) -> dict:
     """Transfer COCO-pretrained yolov5s body weights where shapes match.
 
-    BNL layers keep the same ``weight`` shape as the original Conv2d, so stem
-    and any still-FP modules transfer cleanly. Binary shadow weights that
-    match shape also get the pretrained init (STE then binarises them).
-    Detect head (nc=20 vs COCO 80) is left as-is when shapes differ.
+    Key mapping:
+      * FP stem/Detect: ``det.model.0.conv.weight`` ← ``model.0.conv.weight``
+      * BNL body: ``det.model.1.weight`` ← ``model.1.conv.weight``
+        (BNL stores the kernel on ``.weight``; official Conv uses ``.conv.weight``)
+      * Head with nc=20 vs COCO 80 is skipped when shapes differ.
     """
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     src_sd = ck["model"].float().state_dict()
@@ -88,10 +89,21 @@ def load_pretrained_body(model: BNLYOLOv5, ckpt_path: str, verbose: bool = True)
     new_sd = {}
     for k, v in dst_sd.items():
         src_key = k[len("det.") :] if k.startswith("det.") else k
-        if src_key in src_sd and src_sd[src_key].shape == v.shape:
-            new_sd[k] = src_sd[src_key]
-            transferred += 1
-        else:
+        candidates = [src_key]
+        # BNL BinaryNormalizedConv2d: *.weight / *.bias ← *.conv.weight / *.conv.bias
+        if src_key.endswith(".weight") and ".conv.weight" not in src_key:
+            candidates.append(src_key[: -len(".weight")] + ".conv.weight")
+        if src_key.endswith(".bias") and ".conv.bias" not in src_key:
+            candidates.append(src_key[: -len(".bias")] + ".conv.bias")
+
+        matched = False
+        for ck_key in candidates:
+            if ck_key in src_sd and src_sd[ck_key].shape == v.shape:
+                new_sd[k] = src_sd[ck_key]
+                transferred += 1
+                matched = True
+                break
+        if not matched:
             new_sd[k] = v
     model.load_state_dict(new_sd, strict=False)
     if verbose:

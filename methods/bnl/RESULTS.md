@@ -23,11 +23,25 @@ below for reference. Detection numbers are filled after VOC runs.
 | Binary small (154M) | 1.99 | 0.659 | 7.92 |
 | Binary large (333M) | 1.91 | 0.666 | 7.47 |
 
-## Detection adaptation (VOC mAP@0.5) — planned
+## Detection adaptation (VOC mAP@0.5)
 
-| Run | ours | paper |
+| Run | mAP@0.5 (ours) | paper |
 | --- | --- | --- |
-| YOLOv5s FP32 | — | n/a (paper has no detection) |
-| YOLOv5s + BNL W1 (body) | — | n/a |
+| YOLOv5s FP32 | — (pending full train) | n/a (paper has no detection) |
+| YOLOv5s + BNL W1 (body, stem+Detect FP32) | — (pending full train) | n/a |
+
+### Smoke (finite-loss check, not mAP)
+
+| Item | Value |
+| --- | --- |
+| Date | 2026-07-29 |
+| Hardware | server GPU1 RTX 5060 Ti, Docker `qat-repro` |
+| Config | img=320, batch=2, limit=6 steps, Adam lr=1e-4, pretrained yolov5s.pt |
+| n_bnl_convs | 56 |
+| loss (it0 → avg) | 1.639 → 1.040 |
+| finite | **True** |
+| Log | `/mnt/hdd2/qat_run/bnl_smoke/` |
+
+Full VOC train (50 ep, mAP@0.5) still pending — both GPUs were occupied by q2 M1 runs at smoke time.
 
 Hardware target: GPU server, Docker `qat-repro`, datasets `/mnt/hdd2/datasets/voc`.
