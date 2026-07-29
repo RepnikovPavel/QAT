@@ -33,9 +33,9 @@ next_open_task() {
     f="$TASKS/$t"
     [ -f "$f" ] || continue
     if grep -qiE '^STATUS:\s*DONE' "$f"; then continue; fi
-    wt=$(grep -oiE 'STATUS:\s*WAITING until [0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' "$f | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' || true)
-    # correct grep: extract waiting-until timestamp
-    wt=$(grep -iE '^STATUS:.*WAITING until' "$f" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' | head -1)
+    # extract a "WAITING until YYYY-MM-DD_HH:MM" timestamp if present
+    wt=$(grep -iE '^STATUS:.*WAITING until' "$f" 2>/dev/null \
+          | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' | head -1)
     if [ -n "$wt" ] && [[ "$wt" > "$now" ]]; then continue; fi
     echo "$f"; return
   done
