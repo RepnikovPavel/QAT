@@ -1,0 +1,846 @@
+                                         QuEST: Low-bit Diffusion Model Quantization via Efficient Selective Finetuning
+
+                                                             Haoxuan Wang1                 Yuzhang Shang2           Zhihang Yuan4                   Junyi Wu1
+                                                                                            Junchi Yan3           Yan Yan1†
+                                               1                                    2                                     3                                         4
+                                                   University of Illinois Chicago       University of Central Florida         Shanghai Jiao Tong University             Houmo AI
+
+
+
+                                                                    Abstract                                            M ETHOD       DATA    T IME & M EMORY     L OW- BIT      F ULLY
+arXiv:2402.03666v6 [cs.CV] 15 Jul 2025
+
+
+
+
+                                                                                                                                      F REE       E FFICIENT    C OMPATIBLE   Q UANTIZED
+                                                                                                                      PTQ [19]         ✔            ✔               ✗             ✔
+                                         The practical deployment of diffusion models is still hin-                   QAT [22]         ✗            ✗               ✔             ✔
+                                         dered by the high memory and computational overhead.                    E FFICIENT DM [10]    ✔            ✔               ✔             ✗
+                                                                                                                        O URS          ✔            ✔               ✔             ✔
+                                         Although quantization paves a way for model compres-
+                                         sion and acceleration, existing methods face challenges in             Table 1. Comparison with different frameworks. Our method
+                                         achieving low-bit quantization efficiently. In this paper,             is both efficient and effective for low-bit diffusion model quanti-
+                                                                                                                zation, also achieving a reduced overall bit-width.
+                                         we identify imbalanced activation distributions as a pri-
+                                         mary source of quantization difficulty, and propose to ad-             for accelerating inference speed and reducing memory con-
+                                         just these distributions through weight finetuning to be more          sumption simultaneously [8], making it a natural solution
+                                         quantization-friendly. We provide both theoretical and em-             for deploying diffusion models efficiently. It aims to com-
+                                         pirical evidence supporting finetuning as a practical and              press high-bit model parameters into low-bit approxima-
+                                         reliable solution. Building on this approach, we further               tions with negligible performance degradation. For ex-
+                                         distinguish two critical types of quantized layers: those re-          ample, 4-bit weight and 4-bit activation quantization can
+                                         sponsible for retaining essential temporal information and             achieve up to 8× inference time speedup and memory re-
+                                         those particularly sensitive to bit-width reduction. By selec-         duction theoretically [23]. Hence, low-bit quantization
+                                         tively finetuning these layers under both local and global             of diffusion models emerges as a viable approach for ef-
+                                         supervision, we mitigate performance degradation while                 ficiency enhancement. Unfortunately, existing diffusion
+                                         enhancing quantization efficiency. Our method demon-                   model quantization methods that perform well at higher bit-
+                                         strates its efficacy across three high-resolution image gen-           widths face significant limitations in low-bit settings: some
+                                         eration tasks, obtaining state-of-the-art performance across           only adjust the quantization parameters and fail under low-
+                                         multiple bit-width settings. Code is available at https:               bit conditions [11, 19, 32], while others succeed but require
+                                         //github.com/hatchetProject/QuEST.                                     substantial computational resources comparable to training
+                                                                                                                a diffusion model from scratch [22, 34]. In this work, we
+                                                                                                                aim for efficient low-bit quantization, thereby circumvent-
+                                         1. Introduction                                                        ing the latter choice of resource-intensive training.
+                                         Diffusion models [6, 14, 30, 36] have recently achieved re-                We first reveal the current challenge within diffusion
+                                         markable success in image generation. However, this suc-               models that impede the effectiveness of current efficient
+                                         cess comes at the cost of two major obstacles that limit               low-bit quantization methods [16, 19, 33]. As illustrated
+                                         their efficiency [3]. The first obstacle is the denoising pro-         in Fig. 1(a): activation distributions tend to be imbalanced,
+                                         cess which requires hundreds to thousands of inference time            with most values clustering near zero, while essential high-
+                                         steps, slowing down the generation speed drastically. The              magnitude values are sparse and inconsistently distributed.
+                                         other is the increasing model size, driven by demands for              Existing quantization methods [19, 20, 32] either approxi-
+                                         better image fidelity and higher image resolutions. Both               mate large and sparse values, inadequately estimating nu-
+                                         factors contribute to considerable latency and increased               merous small values, or focus on small values while over-
+                                         computational requirements, impeding the application of                looking the large ones, thereby impeding the reduction of
+                                         diffusion models to real-world settings where both time and            quantization error. To overcome this challenge, we propose
+                                         computational power are carefully restricted.                          to adjust the activation distributions via weight finetuning,
+                                                                                                                where its feasibility is justified both theoretically and empir-
+                                            Neural network quantization offers a feasible solution
+                                                                                                                ically. Nevertheless, finetuning the entire diffusion model
+                                           † Corresponding author                                               is a highly computationally-expensive and time-consuming
+
+
+                                                                                                            1
+process, requiring over 80GB memory and numerous hours                  gressively, achieving low-bit quantization capability with
+[5, 22]. Thus, developing an efficient finetuning strategy              time and memory efficiency.
+tailored for diffusion model quantization is important.               • Experiments on three high-resolution image generation
+    To facilitate efficient quantization, we further identify           tasks over four models demonstrate the superiority of
+two key properties of quantized diffusion models that un-               our method, achieving state-of-the-art performance un-
+lock new opportunities: ❶ diffusion models exhibit vary-                der various bit-width settings.
+ing functions at distinct time steps [2], therefore preserv-
+ing accurate temporal information is important during quan-           2. Related Works
+tization; and ❷ diffusion models possess complex net-
+work architectures, incorporating various types of modules.
+                                                                      2.1. Diffusion Model Inference
+Whereas previous works consider each module as equally                Diffusion models [14, 27, 30] generate samples via an itera-
+important and apply quantization uniformly, we reveal that            tive denoising process. During inference, the initial input is
+certain modules are particularly sensitive to perturbations           sampled from a Gaussian distribution: xT ∼ N (0, I), and
+from quantization, while others are more resilient.                   the final output x0 is obtained through a denoising process:
+    Based on the above findings, we propose a novel quan-
+                                                                                pθ (xt−1 |xt ) = N (xt−1 ; µ̃θ,t (xt ), β˜t I),   (1)
+tization approach for diffusion models, termed QuEST
+(Quantization via Efficient Selective FineTuning). Con-               where µ̃θ,t and β˜t are calculated from the model’s output.
+fronting the revealed quantization challenge, we first the-           This denoising process in a typical diffusion model requires
+oretically justify that weight finetuning can enhance model           tens to thousands of iterations, making efficient inference
+robustness toward large activation perturbations in low-bit           extremely challenging. Practically, diffusion models typi-
+settings, thereby reducing quantization error. In contrast,           cally adopt a UNet architecture [31], incorporating an en-
+previous methods have struggled to properly balance clip-             coder and a decoder. Usually, encoders and decoders are
+ping error and rounding error. Then we empirically demon-             lightweight and computationally inexpensive, so our focus
+strate that by finetuning the model weights, the activation           is on quantizing the UNet structures in latent diffusion mod-
+distributions are modified to be more amenable to quanti-             els, in alignment with the other works.
+zation. As shown in Fig. 1(a), the activation distribution is
+adjusted by reducing the amount of large, sparse values and           2.2. Diffusion Model Quantization
+enhancing the compactness of the value distribution.                  Model quantization is a dominant technique for optimiz-
+    Following the idea of weight finetuning, we compare the           ing the inference memory and speed of deep learning mod-
+effects of quantizing different modules of diffusion mod-             els by reducing the precision of the tensors used in com-
+els (Fig. 1(b)) and identify two types of layers as primary           putation. The researches for diffusion model quantiza-
+culprits to performance degradation: time embedding lay-              tion fall into three categories: Quantization-Aware Train-
+ers exhibiting property ❶ and attention-related layers asso-          ing (QAT) [17, 21, 22], Post-Training Quantization (PTQ)
+ciated with property ❷. Consequently, we selectively and              [19, 20, 25, 32, 37, 38], and Parameter-Efficient Fine-
+progressively finetune the small subsets of identified layers         Tuning methods [10]. QAT methods [22] train all param-
+in conjunction with all activation quantization parameters,           eters from scratch, being effective for low-bit quantiza-
+as illustrated in Fig. 1(c). The learning objective is crafted        tion but are extremely resource-intensive. PTQ methods
+to align the quantized model with its full-precision coun-            [11, 16, 33, 35, 39] calculate the quantization parameters
+terpart at both local and global levels. Involving less than          based on a small calibration set, offering better efficiency.
+7% of the total parameters, QuEST not only substantially              However, PTQ methods often rely on complex designs and
+enhances low-bit quantized model performance, but is also             fail at lower bit-widths. To achieve low-bit compatibility
+notably time-efficient and can be conducted in a data-free            with high efficiency, Parameter-Efficient Fine-Tuning meth-
+manner. Our contributions are summarized as follows:                  ods were proposed. The representative work EfficientDM
+ • We identify the current challenge in low-bit diffusion             [10] trains a low-rank adapter (LoRA) [15] for each layer to
+   model quantization that hinders effective low-bit quan-            reduce training costs, and successfully scales to W4A4.
+   tization, and propose to adjust the activation distributions           Our proposed method also adopts a parameter-efficient
+   via weight finetuning for easier quantization. Both theo-          finetuning strategy, and differs from EfficientDM in the
+   retical and empirical discussions are provided.                    following aspects: Firstly, EfficientDM introduces extra
+ • We uncover and validate two properties in quantized dif-           weight parameters, requiring substantial training iterations
+   fusion models as the main factors for degraded perfor-             on the LoRA weights. Our method instead does not include
+   mance. Motivated by the identified properties, we in-              additional parameters. Secondly, EfficientDM does not
+   troduce QuEST, a parameter-efficient finetuning strat-             quantize the matrix multiplications in the attention mecha-
+   egy that trains the diffusion model selectively and pro-           nism, as well as certain linear layers. Our method quantizes
+
+
+                                                                  2
+                           :                                                                           forward             backward               trainable         fixed
+                        ion g
+                    lut
+                 So tunin
+                  fin
+                      e                                                                                                                                Quantized
+                                                            Challenge of
+                                                            quantization                                                                                   …
+                                  0
+
+      (a) Challenge and Solution for Low-bit Quantization
+                 temporal layer                critical module
+                  quantization                  quantization
+
+
+       Full-                       Partially                     Lower-bit                                                                                 …
+     Precision                    Quantized                      Quantized
+                 Property ➊                    Property ➋                                                                                             Full-Precision
+
+                  (b) Module Selection for Finetuning                                         (c) Eﬃcient Selective Fine-tuning
+Figure 1. Overview of our observations and method. (a) Illustration of the challenge we identified in low-bit diffusion model quantization
+and a potential solution. We propose to ease the quantization difficulty by refining the activation distribution to make it more quantization-
+friendly. (b) Overview of property ❶ and property ❷, whose importance are identified based on their impact on the model’s generation
+performance, making them suitable module candidates for efficient finetuning. (c) Framework of the proposed method. WTE , WA , WF are
+the weights of the time embeddings layers, attention-related layers, and other frozen layers, respectively. s is the quantization parameter.
+To train with efficiency, we adopt a selective and progressive finetuning strategy, incorporating temporal layer alignment (TLA) and critical
+module alignment (CMA). A global loss is also used for network-level guidance, improving the generated image quality.
+
+                                                                                       output.6.1.transformer.0.ff.net.2              output.5.1.transformer.0.ff.net.2
+all layers, and is more time-efficient. Tab. 1 summarizes the
+differences between our method with the other works.                                        6.4
+                                                                                                                                            6.1
+
+
+
+3. Methodology
+3.1. Preliminaries
+                                                                                                         Distribution                                      Distribution
+                                                                                                                                                           Refinement
+The quantization process for a single value x in a vector can                                            Refinement
+
+be formulated as:                                                                -10   -4         0     14                 34   -11        -4     0    4                    20
+                            x
+        x̂ = clamp(round( ) + Z; qmin , qmax ),            (2)                   Figure 2. Illustration of the imbalanced activation distributions. In
+                            s
+                                                                                 the full-precision model, the majority of values cluster near zero
+where x̂ is the quantized integer result, round(·) represents                    with sporadic large values, presenting challenges for low-bit quan-
+rounding algorithms such as the round-to-nearest operator                        tization. Our method refines the activation distributions by elimi-
+[20] and AdaRound [28], s is referred to as the scaling                          nating the large and sparse values, enabling easier quantization.
+factor and Z is the zero-point. clamp is the function that
+clamps values into the range of [qmin , qmax ], which is deter-                  two properties that enable efficient finetuning, forming the
+mined by the bit-width. Reversely, transforming the quan-                        basis of our proposed method.
+tized values back into the full-precision form is:
+                                                                                 3.2. The Challenge in Low-bit Quantization
+                         x̃ = (x̂ − Z) ∗ s.                          (3)         Previous works [16, 19] primarily address the varying acti-
+This is denoted as the dequantization process. The quanti-                       vation distributions across different time steps, facilitating
+zation and dequantization processes are performed on both                        diffusion model quantization at higher bit-widths. How-
+model weights and layer outputs (also termed as ’activa-                         ever, these methods experience failure in low-bit settings.
+tion’). Eq. (2) indicates that the quantization error is com-                    To investigate the potential reason, we focus on the acti-
+posed of two factors: the clipping error produced by range                       vation distribution itself and conduct a layer-wise analysis,
+clamping and the rounding error caused by the rounding                           revealing the following challenge in full-precision diffusion
+function, where they exhibit a trade-off relationship [20].                      models that impedes effective quantization:
+While previous approaches strive for an optimal balance                          Challenge: Despite the majority of values being close to
+between the two errors, they neglect the intrinsic charac-                       zero in the activation outputs, there exist numerically
+teristics in quantized diffusion models. In the following                        large and sparse values holding significant importance.
+sections, we first examine the current challenges in diffu-                         Fig. 2 provides a detailed analysis, where activation val-
+sion model quantization and outline our finetuning motiva-                       ues are clustered into uniformly distributed bins. We find
+tion, providing theoretical justification. We then identify                      that in some layers, though the majority of values are close
+
+
+                                                                             3
+to zero, there exist values that are relatively large and di-        parameters WF are kept frozen during optimization. We
+verse (circled in green). Take the bin plot on the left as           also fix the weight quantization parameters during training,
+an example, the original activation values (blue line) range         reducing the amount of parameters that need to be opti-
+from [-10, 34] but with most values between [-0.6, 1.7]. Vi-         mized. For instance, in LDM-4 [30], no more than 7% of
+sualizations for more layers can be found in Appendix 9.             the parameters are adjusted. The choices for the weights to
+This phenomenon poses difficulties in minimizing the clip-           be finetuned will be discussed in the following sections.
+ping error and is unfriendly for effective quantization.                The activation quantization parameters can be viewed as
+   Moreover, these large and sparse values are important for         additional model parameters. Therefore, we further propose
+generation performance preservation. We find that when re-           a network-wise training strategy. Different from quantiza-
+placing the few tokens with maximum values by random                 tion methods using layer-wise or block-wise reconstruction
+noises, the generated images’ quality is critically degraded         [19, 32] that bind quantization parameters with their corre-
+(as shown in Appendix 10). With these large values being             sponding layers or blocks, we optimize all activation scaling
+important and the small values appearing frequently, neither         factors together with the partial weight parameters. Addi-
+of them is negligible and needs to be carefully quantized at         tionally, while layer/block-wise optimization methods can
+the same time. Unfortunately, typical quantization meth-             only reconstruct sequentially, we update the required pa-
+ods fall short of this ability under low-bit settings, where         rameters at once. In this way, we significantly save the time
+the rounding error often outweighs the clipping error during         and memory needed for quantization.
+optimization and results in over-clipped values, generating
+                                                                     3.3.2. Temporal Layer Alignment
+corrupted images. This inspires us to refine the activation
+distributions to attain more quantization-friendly distribu-         The inference process of diffusion models is highly depen-
+tions, as depicted in Fig. 1(a).                                     dent on the temporal information. Specifically, integer time
+   However, the activation distribution cannot be directly           steps are transformed into time embeddings through one or
+manipulated. To address this, we instead finetune the model          two linear layers, then added to the intermediate model fea-
+weights under quantization constraints, producing a new              tures. Motivated by this observation, we make the following
+yet similar full-precision model whose quantized counter-            analysis that is consistent with previous works [16, 33]:
+part maintains performance comparable to the original full-          Property ❶: Although time embeddings depend solely on
+precision model. Our experiments interestingly reveal that           time steps and are easily obtainable, precise temporal in-
+the proposed finetuning strategy effectively eliminates the          formation is crucial for optimal quantization.
+large and sparse values (Fig. 2), reducing quantization diffi-          TE Setting                       TE Setting
+                                                                                      FID ↓   sFID ↓                  FID ↓   sFID ↓
+culty. We detail our approach in Sec. 3.3 and provide further         (W8A8 Model)                     (W4A8 Model)
+theoretical analysis in Sec. 3.4.                                          PTQ        7.58    22.07        PTQ        8.59    22.74
+                                                                            FP        6.77    22.03         FP        7.55    21.69
+3.3. Quantization via Efficient Selective Finetuning                      Ours        5.61    21.22       Ours        6.95    23.17
+In this section, we introduce QuEST, an efficient finetun-           Table 2. Ablations on time embedding (TE) settings. Finetun-
+ing method for diffusion models that can significantly boost         ing the TE layers with our method surpasses full-precision em-
+low-bit performance with less time and memory usage. We              beddings, while the latter outperforms standard quantized ones.
+also present the two unique properties in quantized diffu-
+sion models, which serve as the foundation for the design               Tab. 2 provides an empirical justification, where we
+of our method. Fig. 1(c) illustrates our approach.                   quantitatively show the performance drop when quantizing
+                                                                     time embeddings to different bit-width. Under W8A8 and
+3.3.1. Data-free Efficient Network-wise Training.                    W4A8 bit-width settings, solely quantizing the time embed-
+We first present the general training pipeline of our method.        dings can lead to an increase of 0.81 and 1.04 (relatively
+To alleviate the need for substantial training data, we con-         15%) in FID, respectively. We infer the reason is that in-
+struct the calibration set in a data-free manner. By feeding         accurate time embeddings can cause mismatched input and
+random Gaussian noises xT into the full-precision model              model functionality, resulting in possible oscillations in the
+and sampling over different time steps, we can obtain the            sequence of noise removal. Previous works either propose
+calibration data needed for finetuning the quantized model.          to learn dynamic quantization parameters across different
+In practice, we only have to infer the full-precision model a        time steps through a simple network [33], or calibrate the
+few times to gather the needed number of calibration sam-            time embedding layers and projection layers across all time
+ples, totaling 128 or 256 samples per time step.                     steps [16]. We instead focus on finetuning the time embed-
+   As depicted in Fig. 1(c), to overcome the quantiza-               ding layers, adjusting fewer modules without introducing
+tion challenge efficiently, we update partial model weights          additional parameters. The results in Tab. 2 also suggest
+(WTE and WA ) that only account for a small subset of pa-            that our method can improve the quantization performance,
+rameters related to the time step t. The remaining weight            even surpassing the full-precision baseline.
+
+
+                                                                 4
+   Concretely, in a single forward process, identical time                             more diverse and complex, making their effective quantiza-
+embeddings are injected into different parts of the model,                             tion more challenging. Surprisingly, we observe that the
+passed through projection layers, and merged with the la-                              FeedForward layer [7] activations cause generation failure
+tent image representations. This implies that the time infor-                          at as early as 6 bits, whereas the activations of all other lin-
+mation operates independently from the primary network                                 ear layers (containing 5 times more layers) barely fail at
+flow. Thus, we refine the time embedding layer l’s weight                              4 bits and all convolution layers (containing 3 times more
+wl along with its activation quantization parameters sl :                              layers) only fail at 4 bits. This indicates that these activa-
+                X                                                                      tions are especially sensitive to low-bit quantization, mak-
+       LTLA =        Et [||O(t; wl ) − Õ(t; wl , sl )||2 ], (4)                       ing them essential to be specially dealt with.
+                 l∈CTE                                                                    Denote CA as the set containing all attention-related [9]
+                                                                                       layers and given their image calibration inputs zt,l , we opti-
+where CTE represents the set of time embedding layers.                                 mize the corresponding weights and all quantization param-
+O(t; wl ) is the intermediate activation of the full-precision                         eters s, except for the ones already updated:
+model representing the ground truth, and Õ(t; wl , sl ) is                                          X
+the quantized activation. This objective function indicates                               LCMA =          Et [||O(zt,l ; wl ) − Õ(z̃t,l ; wl , ŝ)||2 ], (5)
+that the chosen weight parameters are consistently updated                                           l∈CA
+across different time steps, so as to ensure robustness to
+                                                                                       where wl are the weight parameters of the lth layer, z̃t,l is
+diverse temporal inputs. Different from other methods
+                                                                                       the quantized layer input, ŝ = s \ sl , l ∈ CTE , which rep-
+[10, 16] that obtain different sets of quantization parame-
+                                                                                       resents all the quantization parameters without the ones al-
+ters for each time step, we only use a single set for varying
+                                                                                       ready finetuned in Eq. (4). Note that we use different inputs
+time steps, improving time efficiency and memory storage.
+                                                                                       to optimize each module, so as to enhance the robustness of
+3.3.3. Critical Module Alignment                                                       the modules to the input perturbations.
+While inaccurate time embedding quantization reduces per-                              3.3.4. Progressive Alignment with Global Loss
+formance under low-bit settings, it does not cause the com-                            As investigated in the previous sections, two crucial types
+plete generation failure observed in fully quantized models.                           of layers are identified and selected for weight finetuning to
+Through careful layer-wise empirical study, we make the                                enable quantization efficiency: time embedding layers and
+following observation:                                                                 attention-related layers. We progressively align these com-
+Property ❷: Not all activations respond equally to reduced                             ponents with the full-precision model due to their distinct,
+bit-width, as different activations exhibit varying levels of                          non-overlapping functionalities. Since temporal informa-
+sensitivity, with certain critical layers being especially sen-                        tion is independent of the image input and determined early
+sitive to quantization.                                                                in the model, we first finetune the time embedding layers
+                                                                                       to provide accurate time step guidance for each subsequent
+                                                                                       module. Then we optimize the attention-related modules
+                                                                                       with the refined time embeddings.
+                              Gap Emerges
+                              Performance
+
+
+
+
+                                                                                          However, the above selective finetuning strategy only
+                                                                   Image Quality
+
+
+
+
+                                                Failure                                aligns the local information in the model, but is unaware
+                                               Threshold
+                                                                                       of the global error reduction of the quantized model and the
+                                                                                       quantization parameters of the unselected layers. To im-
+                                                                                       prove the final generated images’ quality, we further aim to
+                                                                                       minimize the target task loss to provide global supervision:
+                                                                                                  LG = Et [||O(xt ; w) − Õ(xt ; w, s)||2 ],             (6)
+                                                                                       where w represents all the model weights, O(xt ; w) repre-
+Figure 3. Effect of decreasing different activations’ bit-width on                     sents the final output of the full-precision counterpart and
+the model performance. The generation failure of FeedForward                           Õ(xt ; w, s) is the final output of the quantized model.
+layers emerges at 6 bits, while all other linear layers barely fail at                    By integrating Eq. (4), Eq. (5) and Eq. (6), the final ob-
+4 bits and all convolution layers only fail at 4 bits.                                 jective is formulated as:
+   Fig. 3 illustrates the sensitivity of different activations to
+quantization. Specifically, we quantize three different types                                arg min(LTLA + LCMA + 2LG ), l ∈ CTE ∪ CA . (7)
+                                                                                                   wl
+of activations to lower bits while maintaining the others’
+bit-width to 8-bit, and observe how the decreasing bit-width                           3.4. Finetuning from a Theoretical Perspective
+affects generation performance. Compared to weights that                               The above proposed method is motivated by the intuition
+only fall into linear and convolutional layers, activations are                        that finetuning the model weights can adjust the activa-
+
+
+                                                                                   5
+tion distribution such that the imbalanced activation phe-                                                 Bit-width      Size
+nomenon can be alleviated. In this part, we attempt to ex-                     Dataset        Method                              FID↓
+                                                                                                            (W/A)        (MB)
+plain why finetuning may be a feasible solution, offering
+additional insights for readers. However, we note that this                                     FP           32/32      1045.6    2.95
+is not a theoretical guarantee of the proposed method.                                       PTQ4DM            8/8       279.1    4.75
+    We first review the underlying theory underpinning con-                                 Q-Diffusion        8/8       279.1    4.53
+ventional post-training-quantization methods, which typi-                                     PTQ-D            8/8       279.1    3.75
+cally employ the reconstruction-based approach. Denote                                     EfficientDM∗        8/8       279.1    N/A
+the full-precision diffusion model’s activations at time t as                                  Ours            8/8       279.1    3.03
+zt = [z1,t , z2,t , ..., zn,t ], the final loss as L(zt ; w), where            LSUN-         PTQ4DM            4/8       148.4     N/A
+n is the number of layers. L can be any loss function and                     Bedrooms      Q-Diffusion        4/8       148.4    5.37
+here we use the mean squared error (MSE). We treat quanti-                    (LDM-4)         PTQ-D            4/8       148.4     5.94
+zation as a type of perturbation and formulate the influence                               EfficientDM∗        4/8       148.4    15.15
+of activation quantization using Taylor expansion, assuming                                    Ours            4/8       148.4    3.26
+model weight w is frozen:                                                                    PTQ4DM            4/4       148.4     N/A
+                                                                                            Q-Diffusion        4/4       148.4     N/A
+          E[L(zn,t + ∆; w)] − E[L(zn,t ; w)]
+                                                                                              PTQ-D            4/4       148.4     N/A
+                                  1       (zn,t )                                          EfficientDM∗        4/4       148.4    10.60
+                   ≈ ∆T g(zn,t ) + ∆T H           ∆,             (8)
+                                  2                                                            Ours            4/4       148.4    5.64
+where ∆ is the activation perturbation, g(z) is the gradient                                    FP           32/32      1125.4    4.02
+       (zn,t )
+and H          is the Hessian matrix. According to [20, 41],                                PTQ4DM*            8/8       330.6    63.93
+for a well-trained model, g(zn,t ) = ∇zn,t L approaches 0.                                  Q-Diffusion        8/8       330.6    6.94
+Thus the above equation can be simplified to:                                                PTQ-D*            8/8       330.6    10.76
+ 1 T (zn,t )        1                 (zn,t )
+                                                                                           EfficientDM∗        8/8       330.6     N/A
+   ∆ H        ∆ = (z̃n,t − zn,t )T H          (z̃n,t − zn,t ). (9)                             Ours            8/8       330.6    6.55
+ 2                  2
+                                                                               LSUN-        PTQ4DM*            4/8       189.9    N/A
+However, under low-bit settings, the reasoning from Eq. (8)                   Churches      Q-Diffusion        4/8       189.9    7.80
+to Eq. (9) is inaccurate, where the activation perturbation                   (LDM-8)        PTQ-D*            4/8       189.9    7.33
+∆ is too large for a meaningful Taylor expansion. Thus we
+                                                                                           EfficientDM∗        4/8       189.9    9.29
+have the following proposition:                                                                Ours            4/8       189.9    7.33
+Proposition 3.1. Reconstruction-based post-training quan-                                   PTQ4DM*            4/4       189.9     N/A
+tization methods may lose their theoretical guarantee due to                                Q-Diffusion        4/4       189.9     N/A
+the large value perturbations under low-bit quantization.                                    PTQ-D*            4/4       189.9     N/A
+   Since the inaccuracy arises from the large activation per-                              EfficientDM∗        4/4       189.9    14.34
+                                                                                               Ours            4/4       189.9    11.76
+turbation ∆, we transform ∆ into a smaller perturbation ϵ
+and derive the following theorem:                                           Table 3. Quantization performance on LSUN-Bedrooms/Churches
+Theorem 3.2. Given an n layer diffusion model at time t                     256×256. “N/A” denotes generation failure. “*” denotes the re-
+                                                                            sults obtained by re-implementing the open-source code. More
+with quantized activations as z̃t = [z̃1,t , z̃2,t , ..., z̃n,t ] and
+                                                                            baseline and metric comparisons are included in the Appendix.
+z̃n,t = zn,t + ∆, where zn,t is the ground truth and ∆ is the
+large perturbation caused by low-bit quantization. Denote                       Theorem 3.2 indicates that, to minimize quantization er-
+the target task MSE loss as L(zt ; w), the quantization error               ror, wn should ideally be fine-tuned so that, for any i, the
+                                                                                                                   i
+can be transformed into:                                                    weights fit the corresponding input z̃n−1,t  + (i − 1)ϵ. This
+                                                                            adjustment captures variations that the full-precision model
+    E[L(zn,t + ∆; w)] − E[L(zn,t ; w)]
+                                                                            may overlook. In other words, fine-tuning optimizes
+         K
+         X                                                                  model weights for better robustness towards large in-
+  ≈2ϵT        i
+           (z̃n−1,t · wn − zn,t )                                           put activation perturbations, facilitating easier quanti-
+          i=1
+                                                                            zation. Moreover, since the finetuned and quantized model
+            K
+         1X i                    (zn,t +(i−1)ϵ) i                           is aligned with the original full-precision model, the poten-
+     +         (z̃n,t − zn,t )T H              (z̃n,t − zn,t ) (10)         tial impact on generation performance can be avoided. Note
+         2 i=1
+                                                                            that the second term in Eq. (10) can be ignored within an ac-
+                                         i       i
+where wn is the weight for layer n and z̃n,t = z̃n−1,t · wn ,               ceptable upper bound, as it is of second order and shares a
+K is a large constant and ∆ = Kϵ.                                           common zero-loss solution with the first term.
+
+
+                                                                        6
+  Bit-width                    Size                                           Bit-width (W/A)             Method              Size (MB)      CLIP Score↑
+                Method                FID↓    sFID↓      IS↑
+   (W/A)                      (MB)
+                                                                                  32/32                      FP                 3279.1           31.50
+   32/32          FP         1529.7   11.28    7.70    364.73
+                                                                                                         Q-Diffusion             949.0           31.43
+               Q-Diffusion    428.7   10.60    9.29    350.93                         8/8
+                                                                                                           Ours                  949.0           31.47
+    8/8          PTQ-D        428.7   10.05    9.01    359.78
+              EfficientDM∗    435.0   11.38    8.04    362.34                                            Q-Diffusion             539.1           31.39
+                                                                                      4/8
+                  Ours        428.7   10.43    6.07    365.12                                              Ours                  539.1           31.50
+               Q-Diffusion    237.5    9.29    9.29    336.80                                            Q-Diffusion             539.1            N/A
+                                                                                      4/4
+    4/8          PTQ-D        237.5    8.74    7.98    344.72                                              Ours                  539.1           28.85
+              EfficientDM∗    243.8    9.93    7.34    353.83
+                                                                       Table 5. Quantization performance on Stable Diffusion v1.4
+                  Ours        237.5    8.48    6.55    354.97
+                                                                       (512×512) using COCO2014 prompts.
+               Q-Diffusion    237.5    N/A     N/A      N/A
+    4/4          PTQ-D        237.5    N/A     N/A      N/A            Inception Score is not a reasonable metric for datasets that
+              EfficientDM∗    243.8    6.97    9.28    199.96          have significantly different domains and categories from
+                  Ours        237.5    5.98    7.93    202.45          ImageNet [19], thus not included. We further provide com-
+Table 4. Quantization performance on ImageNet 256×256. “*”             parison with TFMQ-DM [16] in Appendix 6.
+denotes the results obtained by re-running the open-source code.       Class-conditional Generation: We evaluate the perfor-
+                                                                       mance using LDM-4 on ImageNet 256×256 using the
+4. Experiments                                                         DDIM sampler (20 steps). As shown in Tab. 4, three met-
+4.1. Experiment Settings                                               rics are used for evaluation. Note that sFID uses additional
+                                                                       intermediate spatial features for calculation compared with
+To verify the effectiveness of our proposed method, we con-            FID. We can also see that FID is not a valid metric for Im-
+duct experiments on three types of generation tasks: Uncon-            ageNet LDM-4 evaluation: All methods have lower FID
+ditional image generation on LSUN-Bedrooms and LSUN-                   when quantized to lower bits, conflicting with human per-
+Churches datasets [40], class-conditional image generation             ception. We show that our method not only succeeds in
+on ImageNet [4], and text-to-image generation. The model               W4A4 quantization, but also improves the generation qual-
+architectures we quantize include LDMs and Stable Diffu-               ity under higher bit settings. Under all three kinds of bit-
+sion [30], and use ”WnAm” to represent the quantization                width settings, our method is able to outperform the SOTA
+setting: n-bit weight quantization and m-bit activation quan-          PTQ methods and EfficientDM in both sFID and IS. Exam-
+tization. DDIM samplers [14] are adopted for LDMs and                  ples of our generated images are included in Appendix 11.
+the PLMS sampler [26] is used for Stable Diffusion. We                 Text-to-image Generation: We use Stable Diffusion v1.4
+generate 256 samples per time step for constructing the cal-           as the model for quantization with the PLMS sampler sam-
+ibration set. The Adam optimizer [18] is adopted and the               pling 50 time steps. Tab. 5 shows the results. Images are
+learning rate for weight finetuning and scaling factor fine-           generated based on the 10,000 prompts sampled from the
+tuning is set as 1e−5 and 1e−4 respectively.                           COCO2014 [24] validation set, and CLIP Score is calcu-
+    We compare with popular PTQ methods including                      lated based on the ViT-B/16 backbone. Given the limited
+PTQ4DM [32], Q-Diffusion [19] and PTQ-D [11], as                       works done on Stable Diffusion, we can only compare with
+well as the state-of-the-art efficient finetuning method Ef-           Q-Diffusion and the full-precision baseline.
+ficientDM [10]. The performance of different quantized                           FP         Q-Diﬀusion     Ours               Q-Diﬀusion EﬃcientDM   Ours
+LDMs is evaluated using the Fréchet Inception Distance
+(FID) [13], spatial FID (sFID) [29] and Inception Score
+                                                                       W8A8
+
+
+
+
+                                                                                                                       W4A4
+
+
+
+
+(IS) [1]. Unless specified, quantitative results are obtained
+by sampling 50,000 images and evaluated using the offi-
+cial evaluation scripts [6]. For Stable Diffusion, we use the
+CLIP Score [12] for evaluation. All experiments are con-
+ducted on A6000 GPUs.                                                  Figure 4. Visual comparison with Q-Diffusion and EfficientDM.
+                                                                       QuEST outperforms the baselines with better visual quality.
+4.2. Experiment Results and Analysis
+Unconditional Generation: We evaluate the performance
+                                                                       4.3. Ablations and Discussions
+of our method over LDM-4 (LSUN-Bedrooms 256×256)                       Efficiency comparison with PTQ methods and the im-
+and LDM-8 (LSUN-Churches 256×256) using the DDIM                       pact of individual components. Tab. 6 compares the effi-
+sampler with 200 and 500 time steps, respectively. Results             ciency and performance against the post-training quantiza-
+are shown in Tab. 3 using FID, where our method outper-                tion (PTQ) approach on the LSUN-Bedrooms dataset. Al-
+forms the other baselines by a good margin. Note that the              though our method uses the same amount of calibration data
+
+
+                                                                   7
+                     Bit-width     Calibration        Time cost         Memory cost       Model size                TLA      w/o LG     w/ LG
+      Method                                                                                           FID↓
+                      (W/A)         data size        (GPU hours)          (MB)             (MB)
+                                                                                                                    FID↓       8.99       6.41
+        FP             32/32             -                -                    -            1045.6      2.95       sFID↓      15.23      11.18
+     PTQ [19]           4/8             5120            23.08             10334              148.4      5.37       CMA       w/o LG     w/ LG
+     Baseline           4/8             5120            11.52              9822              148.4      6.95
+      + TLA             4/8             5120            13.13             11862              148.4      4.41        FID↓      11.41       6.20
+  + TLA + CMA           4/8             5120            15.25             12178              148.4      3.26       sFID↓      15.64      12.32
+
+Table 6. Component and efficiency comparisons on LDM-4 (LSUN-Bedrooms 256 × 256). The                            Table 7. Influence of global loss
+baseline method is direct quantization with the Adaptive Rounding [28] strategy.                                 supervision on performance.
+as the PTQ approach, it achieves better time efficiency with                       ules in a quantized model. We take this into consideration
+only a 20% increase in GPU memory usage. We also illus-                            and optimize the time embeddings with arg minwl (LTLA +
+trate the contribution of each component to generation per-                        LG ), l ∈ CTE so that the time embedding layers are also
+formance. The results indicate that sequentially finetuning                        trained to minimize the final prediction error. As shown in
+the time embedding layers, followed by attention-related                           Tab. 2, adding this optimization objective enhances quanti-
+layers, yields consistent performance improvements.                                zation performance, even surpassing the full-precision base-
+    Tab. 7 presents a comparison of performance with and                           line (which uses precomputed features).
+without the global loss LG . The results indicate that su-                         Integration with LoRA finetuning. Different ways ex-
+pervising the quantized model using the output difference                          ist for finetuning quantized models. We further employ
+from the full-precision counterpart is essential for perfor-                       QALoRA [10] to finetune on the ImageNet 256×256
+mance improvement, enhancing the FID by 2.58 and 5.21                              dataset. A rank of 32 is used for the LoRA weights, and the
+for TLA and CMA, respectively. However, when the learn-                            parameters are trained over 100 time steps for 160 epochs.
+ing process is only supervised by the global loss, we find                         We find that integrating the QALoRA technique leads to a
+that the performance degrades by 7.13 FID and 9.39 sFID                            5.62 increase in FID, indicating that finetuning the original
+for TLA, suggesting that the global loss alone is insufficient                     layers is a better solution for performance preservation.
+for optimal performance.                                                           Efficiency comparison with other finetuning methods.
+                               Time      Memory                                    We compare with EfficientDM and full-finetuning in terms
+  Bit-width      Method                               Iters     FID ↓              of actual training costs on LDM-4 in Tab. 8. The setting of
+                                (h)       (MB)
+               EfficientDM       2.60        12004    32k       15.15
+                                                                                   full-finetuning is aligned with our method. We observe that:
+   W4A8        Full-finetune     0.85        15076    2.2k       5.38              compared with EfficientDM, our method requires fewer
+                   Ours          0.45        12178    2.2k       3.82              training iterations and time to obtain better performance
+                                                                                   with comparable GPU memory cost. Compared with full-
+               EfficientDM       2.60        12004    32k       10.60
+   W4A4        Full-finetune     0.85        15076    2.2k       6.36
+                                                                                   finetuning, our method costs less time and memory, as well
+                   Ours          0.45        12178    2.2k       6.12              as achieving better performance. The bottleneck in compu-
+                                                                                   tational costs becomes more severe when scaled to larger
+ Table 8. Efficiency comparison with other finetuning methods.
+                                                                                   models such as Stable Diffusion. We find that while full-
+How QuEST adjusts the activation distribution. Our ap-                             finetuning quickly encounters OOM, our method is able to
+proach is motivated by the imbalanced activation distribu-                         finetune SD on a single GPU with 48GB memory.
+tion in diffusion models, hence we aim to analyze how our
+fine-tuning strategy addresses this challenge. As shown in                         5. Conclusion
+Fig. 2, our method refines the activation distribution, mak-
+ing it more conducive to quantization. Specifically, the ac-                       We have proposed QuEST, an efficient data-free finetuning
+tivation value ranges shrink from [-10, 34] to [-4, 14] and                        framework for low-bit diffusion model quantization. Our
+from [-11, 20] to [-4, 4]. Additionally, the standard de-                          method is motivated by the current challenge in low-bit dif-
+viations decrease from 0.171 to 0.157 and from 0.073 to                            fusion model quantization and guided by the two underlying
+0.071, while the mean remains consistent. This results in                          properties found in quantized diffusion models. To allevi-
+a more compact activation distribution, effectively reducing                       ate the performance degradation, we propose to finetune the
+both rounding and clipping errors during quantization.                             time embedding layers and the attention-related layers un-
+Comparison with precomputed time embeddings. In dif-                               der the supervision of the full-precision counterpart. Exper-
+fusion models, time embeddings are independent of input                            imental results on three high-resolution image generation
+conditions and noise. A potential approach is to precompute                        tasks (including Stable Diffusion) demonstrate the effec-
+these embeddings and reuse them directly. However, this                            tiveness and efficiency of QuEST, achieving low-bit com-
+strategy overlooks the compatibility between different mod-                        patibility with less time and memory cost.
+
+
+                                                                           8
+Acknowledgments: This research is supported by                          [15] Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-
+NSF IIS-2525840, CNS-2432534, ECCS-2514574, NIH                              Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen.
+1RF1MH133764-01 and Cisco Research unrestricted gift.                        Lora: Low-rank adaptation of large language models, 2021.
+This article solely reflects opinions and conclusions of au-                 2
+thors and not funding agencies.                                         [16] Yushi Huang, Ruihao Gong, Jing Liu, Tianlong Chen, and
+                                                                             Xianglong Liu. Tfmq-dm: Temporal feature maintenance
+References                                                                   quantization for diffusion models, 2024. 1, 2, 3, 4, 5, 7
+                                                                        [17] Benoit Jacob, Skirmantas Kligys, Bo Chen, Menglong Zhu,
+ [1] Shane Barratt and Rishi Sharma. A note on the inception                 Matthew Tang, Andrew Howard, Hartwig Adam, and Dmitry
+     score, 2018. 7                                                          Kalenichenko. Quantization and training of neural networks
+ [2] Jooyoung Choi, Jungbeom Lee, Chaehun Shin, Sungwon                      for efficient integer-arithmetic-only inference, 2017. 2
+     Kim, Hyunwoo Kim, and Sungroh Yoon. Perception pri-                [18] Diederik P. Kingma and Jimmy Ba. Adam: A method for
+     oritized training of diffusion models, 2022. 2                          stochastic optimization, 2017. 7
+ [3] Florinel-Alin Croitoru, Vlad Hondru, Radu Tudor Ionescu,           [19] Xiuyu Li, Yijiang Liu, Long Lian, Huanrui Yang, Zhen
+     and Mubarak Shah. Diffusion models in vision: A survey.                 Dong, Daniel Kang, Shanghang Zhang, and Kurt Keutzer.
+     IEEE Transactions on Pattern Analysis and Machine Intelli-              Q-diffusion: Quantizing diffusion models. In Proceedings of
+     gence, 45(9):10850–10869, 2023. 1                                       the IEEE/CVF International Conference on Computer Vision
+ [4] Jia Deng, Wei Dong, Richard Socher, Li-Jia Li, Kai Li,                  (ICCV), pages 17535–17545, 2023. 1, 2, 3, 4, 7, 8
+     and Li Fei-Fei. Imagenet: A large-scale hierarchical image         [20] Yuhang Li, Ruihao Gong, Xu Tan, Yang Yang, Peng Hu, Qi
+     database. In 2009 IEEE conference on computer vision and                Zhang, Fengwei Yu, Wei Wang, and Shi Gu. Brecq: Pushing
+     pattern recognition, pages 248–255. IEEE, 2009. 7                       the limit of post-training quantization by block reconstruc-
+ [5] Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke                  tion. arXiv preprint arXiv:2102.05426, 2021. 1, 2, 3, 6
+     Zettlemoyer. Qlora: Efficient finetuning of quantized llms,        [21] Yanjing Li, Sheng Xu, Baochang Zhang, Xianbin Cao, Peng
+     2023. 2                                                                 Gao, and Guodong Guo. Q-vit: Accurate and fully quantized
+ [6] Prafulla Dhariwal and Alex Nichol. Diffusion models beat                low-bit vision transformer, 2022. 2
+     gans on image synthesis, 2021. 1, 7
+                                                                        [22] Yanjing Li, Sheng Xu, Xianbin Cao, Baochang Zhang, and
+ [7] Zhida Feng, Zhenyu Zhang, Xintong Yu, Yewei Fang,                       Xiao Sun. Q-dm: An efficient low-bit quantized diffusion
+     Lanxin Li, Xuyi Chen, Yuxiang Lu, Jiaxiang Liu, Wei-                    model. In NeurIPS 2023, 2023. 1, 2
+     chong Yin, Shikun Feng, Yu Sun, Li Chen, Hao Tian, Hua
+                                                                        [23] Tailin Liang, John Glossner, Lei Wang, Shaobo Shi, and Xi-
+     Wu, and Haifeng Wang. Ernie-vilg 2.0: Improving text-to-
+                                                                             aotong Zhang. Pruning and quantization for deep neural
+     image diffusion model with knowledge-enhanced mixture-
+                                                                             network acceleration: A survey. Neurocomputing, 461:370–
+     of-denoising-experts. In Proceedings of the IEEE/CVF
+                                                                             403, 2021. 1
+     Conference on Computer Vision and Pattern Recognition
+     (CVPR), pages 10135–10145, 2023. 5                                 [24] Tsung-Yi Lin, Michael Maire, Serge Belongie, Lubomir
+ [8] Amir Gholami, Sehoon Kim, Zhen Dong, Zhewei Yao,                        Bourdev, Ross Girshick, James Hays, Pietro Perona, Deva
+     Michael W Mahoney, and Kurt Keutzer. A survey of quan-                  Ramanan, C. Lawrence Zitnick, and Piotr Dollár. Microsoft
+     tization methods for efficient neural network inference. In             coco: Common objects in context, 2015. 7
+     Low-Power Computer Vision, pages 291–326. Chapman and              [25] Jiawei Liu, Lin Niu, Zhihang Yuan, Dawei Yang, Xinggang
+     Hall/CRC, 2022. 1                                                       Wang, and Wenyu Liu. Pd-quant: Post-training quantization
+ [9] Meng-Hao Guo, Cheng-Ze Lu, Zheng-Ning Liu, Ming-Ming                    based on prediction difference metric, 2023. 2
+     Cheng, and Shi-Min Hu. Visual attention network. Compu-            [26] Luping Liu, Yi Ren, Zhijie Lin, and Zhou Zhao. Pseudo
+     tational Visual Media, 9(4):733–752, 2023. 5                            numerical methods for diffusion models on manifolds, 2022.
+[10] Yefei He, Jing Liu, Weijia Wu, Hong Zhou, and Bohan                     7
+     Zhuang. Efficientdm: Efficient quantization-aware fine-            [27] Hao Ma, Jingyuan Yang, and Hui Huang. Taming diffusion
+     tuning of low-bit diffusion models, 2023. 1, 2, 5, 7, 8                 model for exemplar-based image translation. Computational
+[11] Yefei He, Luping Liu, Jing Liu, Weijia Wu, Hong Zhou, and               Visual Media, 10(6):1031–1043, 2024. 2
+     Bohan Zhuang. Ptqd: Accurate post-training quantization            [28] Markus Nagel, Rana Ali Amjad, Mart Van Baalen, Chris-
+     for diffusion models, 2023. 1, 2, 7                                     tos Louizos, and Tijmen Blankevoort. Up or down? adap-
+[12] Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras,               tive rounding for post-training quantization. In International
+     and Yejin Choi. Clipscore: A reference-free evaluation met-             Conference on Machine Learning, pages 7197–7206. PMLR,
+     ric for image captioning, 2022. 7                                       2020. 3, 8
+[13] Martin Heusel, Hubert Ramsauer, Thomas Unterthiner,                [29] Charlie Nash, Jacob Menick, Sander Dieleman, and Peter W.
+     Bernhard Nessler, and Sepp Hochreiter. Gans trained by a                Battaglia. Generating images with sparse representations,
+     two time-scale update rule converge to a local nash equilib-            2021. 7
+     rium, 2018. 7                                                      [30] Robin Rombach, Andreas Blattmann, Dominik Lorenz,
+[14] Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffu-             Patrick Esser, and Björn Ommer. High-resolution image syn-
+     sion probabilistic models, 2020. 1, 2, 7                                thesis with latent diffusion models, 2021. 1, 2, 4, 7
+
+
+                                                                    9
+[31] Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net:
+     Convolutional networks for biomedical image segmentation,
+     2015. 2
+[32] Yuzhang Shang, Zhihang Yuan, Bin Xie, Bingzhe Wu, and
+     Yan Yan. Post-training quantization on diffusion models. In
+     CVPR, 2023. 1, 2, 4, 7
+[33] Junhyuk So, Jungwon Lee, Daehyun Ahn, Hyungjun Kim,
+     and Eunhyeok Park. Temporal dynamic quantization for dif-
+     fusion models, 2023. 1, 2, 4
+[34] Yang Sui, Yanyu Li, Anil Kag, Yerlan Idelbayev, Junli Cao,
+     Ju Hu, Dhritiman Sagar, Bo Yuan, Sergey Tulyakov, and Jian
+     Ren. Bitsfusion: 1.99 bits weight quantization of diffusion
+     model, 2024. 1
+[35] Changyuan Wang, Ziwei Wang, Xiuwei Xu, Yansong Tang,
+     Jie Zhou, and Jiwen Lu. Towards accurate data-free quanti-
+     zation for diffusion models, 2023. 2
+[36] Chen Wang, Hao-Yang Peng, Ying-Tian Liu, Jiatao Gu, and
+     Shi-Min Hu. Diffusion models for 3d generation: A survey.
+     Computational Visual Media, 11(1):1–28, 2025. 1
+[37] Xiuying Wei, Ruihao Gong, Yuhang Li, Xianglong Liu, and
+     Fengwei Yu. Qdrop: Randomly dropping quantization for
+     extremely low-bit post-training quantization, 2023. 2
+[38] Junyi Wu, Haoxuan Wang, Yuzhang Shang, Mubarak Shah,
+     and Yan Yan. Ptq4dit: Post-training quantization for diffu-
+     sion transformers, 2024. 2
+[39] Yuewei Yang, Xiaoliang Dai, Jialiang Wang, Peizhao Zhang,
+     and Hongbo Zhang. Efficient quantization strategies for la-
+     tent diffusion models, 2023. 2
+[40] Fisher Yu, Yinda Zhang, Shuran Song, Ari Seff, and Jianx-
+     iong Xiao. Lsun: Construction of a large-scale image dataset
+     using deep learning with humans in the loop. arXiv preprint
+     arXiv:1506.03365, 2015. 7
+[41] Zhihang Yuan, Chenhao Xue, Yiqi Chen, Qiang Wu, and
+     Guangyu Sun. Ptq4vit: Post-training quantization frame-
+     work for vision transformers with twin uniform quantization,
+     2022. 6
+
+
+
+
+                                                                    10
+QuEST: Low-bit Diffusion Model Quantization via Efficient Selective Finetuning
+                                                Supplementary Material
+                                                                             model.output_blocks.7.1.transformer_blocks.0.ff.net.2         model.input_blocks.5.1.transformer_blocks.0.ff.net.2
+    The supplementary material is organized as follows:                                                             6.0                                                      6.0
+
+Sec. 6 provides comparison with TFMQ-DM; Sec. 7 pro-
+vides comparison on the low-resolution dataset; Sec. 8
+provides the proof and detailed analysis for Theorem 3.2;
+Sec. 9 presents additional examples of the imbalanced dis-
+tributions across different models; Sec. 10 highlights the
+                                                                          -4.7 -4.2                             0                3.5   -2.1 -2.0                         0                        1.5
+
+importance of the large values in activations; Sec. 11 offers
+                                                                         (a) Activation Distribution on Conditional LDM4
+further generated examples from our method across varying
+                                                                                       (ImageNet 256 × 256)
+bit-widths; and Sec. 12 discusses limitations and broader                                  model.input_blocks.8.1.qkv                                   model.output_blocks.4.1.qkv
+
+
+considerations.                                                                                       4.6
+                                                                                                                                                              4.5
+
+
+
+
+6. More Baseline Comparisons
+We further compare with TFMQ [16] below:
+                                                                               -1.3                         0               1.3 1.4       -1.4                      0                    1.6 1.8
+               Bedroom       W8A8      W4A8
+                                                                       (b) Activation Distribution on Unconditional LDM4
+              TFMQ-DM         3.14      3.68                                      (LSUN-Bedrooms 256 × 256)
+               QuEST          3.03      3.26
+                                                                    Figure 5. Illustrations of imbalanced activation distributions
+               ImageNet      W8A8      W4A8                         on conditional LDM4 (ImageNet 256×256) and unconditional
+                                                                    LDM4 (LSUN-Bedrooms 256×256).
+              TFMQ-DM        10.79      10.29
+               QuEST         10.43       8.48
+                 Table 9. Comparing TFMQ.                           8. Proof for Theorem 3.2
+   We also supplement the metrics for Table 3:                      We provide the detailed proof for Theorem 3.2 here. The
+                                                                    notations are consistent with the ones in the main paper.
+                 W8A8         sFID ↓     IS ↑                          Since the perturbation ∆ is too large for accurate Taylor
+              QDiffusion        8.19     2.25                       expansion, we can resolve it by introducing a new pertur-
+                 PTQD           9.89     2.25                       bation ϵ = ∆/K, where we divide ∆ by a constant K so
+              EfficientDM       N/A      N/A                        that ϵ is small enough for approximation. Then, Eq. (8) is
+                  Ours          6.86     2.27                       rewritten as follows:
+
+                 W4A4         sFID ↓     IS ↑                         E[L(zn,t + ∆; w)] − E[L(zn,t ; w)]
+              QDiffusion        N/A      N/A                           K                                                   
+                                                                      X                 i                     i−1
+                 PTQD           N/A      N/A                        =      E[L(zn,t + ∆; w)] − E[L(zn,t +            ∆; w)]
+                                                                      i=1
+                                                                                        K                        K
+              EfficientDM      15.15     2.27
+                                                                       K 
+                  Ours          7.82     2.26
+                                                                                                                  
+                                                                      X
+                                                                            T (zn,t +(i−1)ϵ)  1 T (zn,t +(i−1)ϵ)
+                                                                    ≈      ϵ g               + ϵ H               ϵ ,     (11)
+Table 10. Additional metrics on LSUN-Bedrooms. “N/A” repre-           i=1
+                                                                                              2
+sents generation failure.
+                                                                    where the approximation step follows Taylor expansion and
+7. Low-resolution dataset comparison                                only the first two main components are kept. The first
+                                                                    term in Eq. (11) cannot be ignored because samples such
+We further include experiments on CIFAR10 in Tab. 11.
+                                                                    as zn,t + (i − 1)ϵ may not be included in the learned dis-
+                             W8A8      W4A4                         tribution of the model. The second term can still be mini-
+                                                                    mized by reconstruction since only the difference between
+              Q-Diffusion     3.75       N/A
+              EfficientDM     3.75      10.48                       quantized model output and ground-truth matters. In the
+                QuEST         3.71      9.37                        following, we temporarily exclude the second term for sim-
+                                                                    plicity since it can always be minimized through aligning
+           Table 11. FID comparison on CIFAR10.                     the activation outputs.
+
+
+                                                                1
+                       Randomly corrupt 1 token                            Corrupt 1 maximum value token
+
+
+
+
+                      Randomly corrupt 3 tokens                            Corrupt 3 maximum value tokens
+                                  Figure 6. Comparison of different corruptions made on different tokens.
+
+
+  Given the objective function (MSE loss) of diffusion                     sults of activation distributions of latent diffusion models on
+models, we analyze that:                                                   ImageNet 256 × 256 and LSUN-Bedrooms 256 × 256.
+   K                                K
+                                                                           10. Importance of large values in activations
+   X                                X
+         ϵT g(zn,t +(i−1)ϵ) = 2ϵT        i
+                                      (z̃n−1,t · wn − z n,t )
+   i=1                                 i=1
+                                 K
+                                                                           As shown in Fig. 2, quite a few values are rather large and
+                                                                           diversely distributed. These values pose difficulties on acti-
+                                 X
+                             T            i
+                       ≈2ϵ             (z̃n−1,t · wn − zFP ),   (12)
+                                 i=1
+                                                                           vation quantization, and being rather important and not neg-
+                                                                           ligible. To demonstrate this, we corrupt certain tokens in the
+                                        i                                  activation outputs of the diffusion model and check the cor-
+where wn is the weight for layer n, z̃n−1,t   is the activa-
+tion of the (n − 1)th layer in a quantized model to get                    responding generated images. The corruption is done by
+zn,t + (i − 1)ϵ. Ground-truth z n,t can be approximated                    setting the token values as all zeros. As shown in Fig. 6, we
+                                                  i                        compare two settings: (1) corrupt a certain number of to-
+by the full-precision output zFP . We see that z̃n−1,t  and
+zFP cannot be changed, thus to minimize Eq. (12), we need                  kens randomly; (2) corrupt the same number of the tokens
+to finetune wn . From a general perspective, Eq. (12) also                 with the largest values.
+indicates that the model has not converged well to a local                     We see that when corrupting randomly, generation per-
+minimum given the perturbed inputs, thus when we finetune                  formance is hardly effected. However, corrupting the same
+the model layers given the quantized inputs, we are actually               amount of tokens (even only one token) with the largest val-
+training the model towards convergence over new samples                    ues leads to significantly degenerated images.
+and increasing its robustness.
+                                                                           11. More generated image examples
+9. Examples of Imbalanced Activation Distri-
+    butions                                                                11.1. Unconditional Image Generation
+Apart from Fig. 2, we show that the imbalance in the ac-                   The generated images for LSUN-Bedrooms 256×256 under
+tivation distribution is a common phenomenon in different                  different bit-widths are shown in Fig. 7. Images for LSUN-
+model structures and datasets. In Fig. 5, we show more re-                 Churches 256×256 are shown in Fig. 9.
+
+
+                                                                       2
+                                                                        Prompt: Impressionist landscape of a Japanese garden in Autumn, with a bridge over a koi pond.
+
+
+
+
+                                                                                          FP                                                 W8A8
+
+
+
+
+                                                                                         W4A8                                                W4A4
+                                                                              Prompt: A cozy cabin nestled in a snowy forest with smoke rising from the chimney.
+
+
+
+
+                       (a) Full Precision
+                                                                                           FP                                                W8A8
+
+
+
+
+                                                                                         W4A8                                                W4A4
+                                                                   Figure 8. Text-to-image generation results on Stable Diffusion.
+
+                                                                  12. Limitations and Broader Impacts
+                                                                  The primary objective of this paper is to further the research
+                                                                  in enhancing the efficiency of diffusion models. While
+                                                                  it confronts societal consequences akin to those faced by
+                          (b) W8A8                                research on generative models, it is important to recog-
+                                                                  nize the potential impacts that quantized models could have
+                                                                  on current techniques, including watermarking and safety
+                                                                  checking. Inappropriate integration of current methodolo-
+                                                                  gies may result in unforeseen performance issues, a factor
+                                                                  that deserves attention and awareness.
+
+
+
+
+                          (c) W4A8
+
+
+
+
+                          (d) W4A4
+Figure 7. Unconditional image generation examples for LSUN-
+Bedrooms 256×256.
+11.2. Class-conditional image generation
+Fig. 10 shows the generated images for 3 different classes.
+
+11.3. Text-to-image generation
+Fig. 8 shows the generated images using Stable Diffusion
+v1.4 under different bit-width.
+
+
+                                                              3
+                      (a) Full Precision                                                 (a) Full Precision
+
+
+
+
+                         (b) W8A8                                                           (b) W8A8
+
+
+
+
+                         (c) W4A8                                                           (c) W4A8
+
+
+
+
+                         (d) W4A4                                                           (d) W4A4
+Figure 9. Unconditional image generation examples for LSUN-       Figure 10. Conditional image generation results for ImageNet
+Churches 256×256.                                                 256×256.
+
+
+
+
+                                                              4
+

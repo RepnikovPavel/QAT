@@ -1,0 +1,21 @@
+# SOTA QAT papers to parse + triage (arXiv IDs)
+# Priority: detection-applicable / ultra-low-bit first
+
+# Target methods from task brief
+2503.11159  # FPQ: Feature-Perturbed Quantization (stabilize QAT via feature noise + distillation)
+2506.11784  # GPLQ: General Practical Lightning QAT for Vision Transformers (NeurIPS 2025)
+2402.03666  # QuEST: Low-bit Diffusion Model Quantization via Efficient Selective Finetuning (ICCV 2025)
+
+# Detection-specific QAT (high priority for this repo)
+2603.05964  # CR-QAT: Curriculum Relational QAT for Open-Vocabulary Object Detection
+2304.00253  # Q-DETR: Efficient Low-Bit Quantized Detection Transformer (CVPR 2023)
+# AQ-DETR: Low-Bit Quantized DETR with Auxiliary Queries (AAAI 2024) — may lack arXiv; check proceedings
+
+# Related / supporting QAT
+2402.17764  # (already partially in papers/) BitNet-era / related
+2509.07025  # BNL (already parsed)
+2511.05898  # Q2 (already in methods/q2)
+
+# Secondary candidates from 2025 search
+2505.14302  # Scaling Law for Quantization-Aware Training
+2507.16782  # Task-Specific Zero-shot QAT
