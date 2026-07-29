@@ -105,7 +105,8 @@ paper formulas above are taken from `papers/2509.07025/document.md`.
 | Per-example Normalize | `bnl/normalize.py::per_example_normalize` |
 | BNFCL (Alg. 1) | `bnl/layers.py::BinaryNormalizedLinear` |
 | BNCVL (Alg. 3 / Eq. 2) | `bnl/layers.py::BinaryNormalizedConv2d` |
-| Detection adapter (planned) | replace mid-backbone `nn.Conv2d` in YOLOv5; keep stem + Detect head FP32 |
+| Detection adapter | `bnl/yolo_bnl.py::BNLYOLOv5` — mid-body YOLOv5 `Conv` → `BinaryNormalizedConv2d`; stem + Detect FP32 |
+| VOC train | `train_detect.py` + `recipes/bnl_voc.md` |
 
 ## Detection adaptation plan
 
