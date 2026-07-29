@@ -75,7 +75,8 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                 dcls = det[:, 5].long()
                 # match
                 if nl:
-                    correct = torch.zeros(dbox.shape[0], dtype=torch.bool, device=device)
+                    # tp shape (n_pred, 1) as expected by yolov5 ap_per_class
+                    correct = torch.zeros((dbox.shape[0], 1), dtype=torch.float32, device=device)
                     iou = _iou_matrix(dbox, tbox)
                     # for each class
                     for c in torch.unique(torch.tensor(tcls, device=device)):
@@ -89,13 +90,13 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                                     matched = set()
                                     for j, k in zip(*x):
                                         if k.item() not in matched:
-                                            correct[di[j]] = True
+                                            correct[di[j], 0] = 1.0
                                             matched.add(k.item())
                                             break
-                    stats.append((correct, dconf.cpu(), dcls.cpu(),
+                    stats.append((correct.cpu(), dconf.cpu(), dcls.cpu(),
                                   torch.tensor(tcls)))
                 else:
-                    stats.append((torch.zeros(dbox.shape[0], dtype=torch.bool),
+                    stats.append((torch.zeros((dbox.shape[0], 1)),
                                   dconf.cpu(), dcls.cpu(), torch.tensor([])))
                 seen += 1
 
