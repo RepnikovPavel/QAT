@@ -34,7 +34,7 @@ def _iou_matrix(boxes1, boxes2):
 
 
 def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
-             nms_thres=0.6, max_det=300):
+             nms_thres=0.6, max_det=300, img_size=640):
     """Compute mAP@0.5 over the loader."""
     from yolov5.utils.general import non_max_suppression
     from yolov5.utils.metrics import ap_per_class
@@ -51,13 +51,13 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                                        max_det=max_det)
             # build target boxes per image in PIXEL xyxy (predictions decode to
             # pixel xyxy, so we convert normalised cxcywh targets accordingly).
-            tg = targets_to_yolo(targets, img_size=args.img_size)  # norm cxcywh
+            tg = targets_to_yolo(targets, img_size=img_size)  # norm cxcywh
             for i, det in enumerate(pred):
                 raw = tg[tg[:, 0] == i]  # (L,6) [img,cls,cx,cy,w,h] normalised
                 nl = raw.shape[0]
                 tcls = raw[:, 1].long().tolist() if nl else []
                 if nl:
-                    cx, cy, w, h = (raw[:, 2:6] * args.img_size).T
+                    cx, cy, w, h = (raw[:, 2:6] * img_size).T
                     tbox = torch.stack([cx - w / 2, cy - h / 2,
                                         cx + w / 2, cy + h / 2], 1).to(device)
                     labels_cls = raw[:, 1:2].to(device)
@@ -144,7 +144,7 @@ def main():
     ds = VOCDataset(test_list, img_size=args.img_size, augment=False)
     loader = DataLoader(ds, batch_size=args.batch, shuffle=False,
                         num_workers=args.workers, collate_fn=collate_detection)
-    res = evaluate(model, loader, device, nc=args.nc)
+    res = evaluate(model, loader, device, nc=args.nc, img_size=args.img_size)
     print("RESULT:", res, flush=True)
 
 

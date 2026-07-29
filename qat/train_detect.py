@@ -69,7 +69,8 @@ def build_optimizer(model, lr, momentum, weight_decay):
 
 def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                     qada_loss, device, epoch, qada_weight, img_size=640,
-                    log_every=50, qada_targets=None):
+                    log_every=50, qada_targets=None, use_amp=False,
+                    scaler=None):
     model.train()
     t0 = time.time()
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
@@ -83,10 +84,15 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
         if qada_loss is not None and qada_targets is not None:
             with torch.no_grad():
                 _ = model.det.eval()  # not used; teacher handled separately
-        preds = model(imgs)  # list of 3 scale tensors (training mode)
-
-        loss, items = compute_loss(preds, tg)
-        total = loss
+        if use_amp:
+            with torch.amp.autocast("cuda", dtype=torch.float16):
+                preds = model(imgs)
+                loss, items = compute_loss(preds, tg)
+                total = loss
+        else:
+            preds = model(imgs)  # list of 3 scale tensors (training mode)
+            loss, items = compute_loss(preds, tg)
+            total = loss
 
         # Q-ADA: align teacher/student feature distributions at the concat
         # inputs. We hook the model's last backbone feature as a proxy
@@ -101,13 +107,20 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                 qada_val += 1
 
         optimizer.zero_grad()
-        total.backward()
+        if use_amp and scaler is not None:
+            scaler.scale(total).backward()
+        else:
+            total.backward()
 
         # Q-GBFusion closed-loop dual update (Eq. 8-10)
         if model.qgb_nodes:
             energies = model.step_qgb()
 
-        optimizer.step()
+        if use_amp and scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         scheduler.step()
 
         running["loss"] += float(loss.detach())
@@ -157,6 +170,10 @@ def main():
                     default="/mnt/hdd2/qat_run/weights/yolov5s.pt",
                     help="path to yolov5s.pt (COCO-pretrained body weights)")
     ap.add_argument("--limit", type=int, default=0, help="limit train batches (debug)")
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile the detection forward (Blackwell speedup)")
+    ap.add_argument("--amp", action="store_true",
+                    help="mixed-precision autocast (faster, small accuracy impact)")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -196,6 +213,15 @@ def main():
         qada_loss = QADALoss(divergence="js")
 
     optimizer = build_optimizer(model, args.lr, args.momentum, args.weight_decay)
+
+    if args.compile:
+        # torch.compile the detection forward for speed (Blackwell benefits).
+        # Q-GBFusion hooks run outside the compiled region (they probe grads),
+        # so they are unaffected. reduce-overhead mode cuts CPU overhead.
+        print("[compile] torch.compile(model, mode='reduce-overhead') ...", flush=True)
+        model.det.model = torch.compile(model.det.model, mode="reduce-overhead")
+        model._compiled = True
+
     steps_per_epoch = len(train_loader)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=args.lr, epochs=args.epochs, steps_per_epoch=steps_per_epoch,
@@ -206,11 +232,13 @@ def main():
           f"qgb={args.qgb} qada={args.qada}", flush=True)
     print(f"Params: {sum(p.numel() for p in model.parameters())/1e6:.2f}M", flush=True)
 
+    scaler = torch.amp.GradScaler("cuda") if (args.amp and torch.cuda.is_available()) else None
     for epoch in range(args.epochs):
         r = train_one_epoch(model, train_loader, optimizer, scheduler,
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,
-                            qada_targets=qada_targets)
+                            qada_targets=qada_targets, use_amp=args.amp,
+                            scaler=scaler)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)
