@@ -154,7 +154,8 @@ class QGBFusion(nn.Module):
                 gi_norm = g.norm(2)
             # branch gradient w.r.t. F~_i = alpha_i * grad w.r.t. F'_i (Eq.7)
             gi = (alpha[i].detach().abs() + self.eps) * gi_norm
-            G[i] = gi
+            # numerical guard: clip extreme norms (early training / unstable quantizers)
+            G[i] = torch.nan_to_num(gi, nan=0.0, posinf=1e6, neginf=0.0).clamp(max=1e6)
 
         # EMA update of Gbar (Eq. 8); initialise on first call
         if (self.Gbar < 0).all():
