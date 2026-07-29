@@ -48,7 +48,12 @@ class LSQ(QuantizerBase):
         self._initialised = False
 
     def _grad_factor(self, x: torch.Tensor) -> torch.Tensor:
-        return 1.0 / math.sqrt(x.numel() * max(self.Qp, 1))
+        """LSQ step-size gradient scale (Esser et al. 2020, Sec. 2.2).
+
+        Balances the magnitude of step-size updates against weight updates:
+        ``g = 1/sqrt(Qp * N)`` where N is the number of quantized elements.
+        """
+        return 1.0 / math.sqrt(max(self.Qp, 1) * x.numel())
 
     def _broadcast_step(self, x: torch.Tensor) -> torch.Tensor:
         s = self.step.abs()
@@ -59,13 +64,19 @@ class LSQ(QuantizerBase):
         return s
 
     def quantize(self, x: torch.Tensor):
-        if self.per_channel and not self._initialised:
-            nc = x.shape[self.channel_dim]
+        if not self._initialised:
             with torch.no_grad():
-                # init per-channel step from |mean| of each channel / Qp
-                dims = [d for d in range(x.dim()) if d != self.channel_dim]
-                init = (x.abs().mean(dim=dims) / max(self.Qp, 1)).clamp(min=1e-6)
-                self.step.data = init.detach().clone()
+                # Canonical LSQ init (Esser 2020, Sec. 2.1):
+                #   s = 2 * <|v|> / sqrt(Qp)
+                if self.per_channel:
+                    dims = [d for d in range(x.dim()) if d != self.channel_dim]
+                    mean_abs = x.abs().mean(dim=dims)
+                    nc = x.shape[self.channel_dim]
+                    init = (2 * mean_abs / math.sqrt(max(self.Qp, 1))).clamp(min=1e-6)
+                    self.step.data = init.detach().clone()
+                else:
+                    init = (2 * x.abs().mean() / math.sqrt(max(self.Qp, 1))).clamp(min=1e-6)
+                    self.step.data = init.detach().clone()
             self._initialised = True
 
         s = self._broadcast_step(x)
