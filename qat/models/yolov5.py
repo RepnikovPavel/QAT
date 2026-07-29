@@ -120,6 +120,13 @@ class QYOLOv5(nn.Module):
 
         # Build the OFFICIAL model (no hand-rolled architecture).
         self.det = DetectionModel(cfg=_yolov5s_yaml_path(), ch=3, nc=nc)
+        # yolov5's ComputeLoss reads model.hyp; attach the default hyp dict so
+        # the official loss works without the full train.py plumbing.
+        self.det.hyp = {
+            "box": 0.05, "cls": 0.5, "cls_pw": 1.0, "obj": 1.0, "obj_pw": 1.0,
+            "label_smoothing": 0.0, "fl_gamma": 0.0,
+            "anchor_t": 4.0,
+        }
         self.model = self.det.model  # nn.Sequential-like layer list
         self.save = self.det.save    # layer indices whose output is reused
 
