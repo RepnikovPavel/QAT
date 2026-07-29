@@ -133,17 +133,21 @@ class N2UQ(QuantizerBase):
         return soft
 
     def quantize(self, x: torch.Tensor):
-        if self.per_channel and not self._initialised:
-            nc = x.shape[self.channel_dim]
+        if not self._initialised:
             with torch.no_grad():
-                dims = [d for d in range(x.dim()) if d != self.channel_dim]
-                r = x.abs().amax(dim=dims).clamp(min=1e-3)
-                self.log_range.data = r.log().detach().clone()
-            self._initialised = True
-        elif not self._initialised:
-            with torch.no_grad():
-                r = x.abs().amax().clamp(min=1e-3)
-                self.log_range.data = r.log().detach().clone()
+                # N2UQ keeps a single set of input thresholds (per-tensor); for
+                # weights we use the global max-abs range to initialise L.
+                # (Per-channel threshold learning for weights is not part of the
+                # paper's design — weights use uniform thresholds + entropy
+                # regularisation; we approximate that with per-tensor ranges.)
+                if self.per_channel:
+                    dims = [d for d in range(x.dim()) if d != self.channel_dim]
+                    r = x.abs().amax(dim=dims).mean().clamp(min=1e-3)
+                else:
+                    r = x.abs().amax().clamp(min=1e-3)
+                self.log_range.data = torch.tensor(
+                    float(r.log()), device=x.device, dtype=x.dtype
+                )
             self._initialised = True
 
         th = self._thresholds(x)
