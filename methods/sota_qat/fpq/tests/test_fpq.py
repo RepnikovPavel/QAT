@@ -96,3 +96,84 @@ def test_hook_collects_features():
     assert len(hook.feats) == 1
     assert hook.feats[0].shape == (1, 8, 16, 16)
     hook.close()
+
+
+class _FakeActQuant(nn.Module):
+    """Minimal LSQ-like act quant for SFP wrapper tests."""
+
+    def __init__(self, step: float = 0.25) -> None:
+        super().__init__()
+        self.step = nn.Parameter(torch.tensor(step))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        s = self.step.abs()
+        return (x / s).round().clamp(-8, 7) * s
+
+
+class _FakeQuantConv(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.w_quant = nn.Identity()
+        self.a_quant = _FakeActQuant(0.5)
+        self.conv = nn.Conv2d(3, 4, 1)
+
+    def forward(self, x):
+        x = self.a_quant(x)
+        return self.conv(x)
+
+
+def test_sfp_act_wrapper_eval_identity_path():
+    from sfp_inject import SFPActWrapper
+
+    aq = _FakeActQuant(1.0)
+    wrap = SFPActWrapper(aq, p=1.0)
+    wrap.eval()
+    x = torch.randn(2, 3, 4, 4)
+    # eval: no SFP; output equals bare quant
+    y_w = wrap(x)
+    y_a = aq(x)
+    assert torch.equal(y_w, y_a)
+
+
+def test_sfp_act_wrapper_train_perturbs():
+    from sfp_inject import SFPActWrapper
+
+    class SpyQuant(nn.Module):
+        """Records pre-quant input; noise is U[-s/2,s/2] so may not flip bins."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.step = nn.Parameter(torch.tensor(1.0))
+            self.last_x = None
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.last_x = x.detach().clone()
+            return x
+
+    torch.manual_seed(0)
+    spy = SpyQuant()
+    wrap = SFPActWrapper(spy, p=1.0)
+    wrap.train()
+    x = torch.zeros(2, 4, 8, 8)
+    _ = wrap(x)
+    assert spy.last_x is not None
+    # SFP must have added noise before quant (Eq. 9/14)
+    assert not torch.equal(spy.last_x, x)
+    assert (spy.last_x - x).abs().max() <= 0.5 + 1e-5
+
+
+def test_enable_sfp_wraps_and_disable():
+    from sfp_inject import SFPActWrapper, disable_sfp, enable_sfp
+
+    net = nn.Sequential(_FakeQuantConv(), _FakeQuantConv())
+    n = enable_sfp(net, p=0.2)
+    assert n == 2
+    for m in net:
+        assert isinstance(m.a_quant, SFPActWrapper)
+        assert m.a_quant.p == 0.2
+    n2 = enable_sfp(net, p=0.3)  # idempotent update
+    assert n2 == 2
+    assert net[0].a_quant.p == 0.3
+    nu = disable_sfp(net)
+    assert nu == 2
+    assert not isinstance(net[0].a_quant, SFPActWrapper)

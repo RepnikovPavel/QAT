@@ -24,7 +24,19 @@ Task loss (CE on CIFAR; detector multi-task loss on VOC) + `L_CSD` (Eq. 22).
 | Eq. 16–17 CSD | `channel_standardize` + `csd_loss` |
 | Eq. 22 regulariser | `fpq_regularizer` |
 
+## Integration (detection)
+
+| Piece | File |
+| --- | --- |
+| SFP on LSQ act inputs | `sfp_inject.SFPActWrapper` / `enable_sfp` |
+| CSD stage hooks | `sfp_inject.attach_csd_hooks` (yolov5s layers 4/6/9/13/17/20/23) |
+| VOC train LSQ ± FPQ | `train_detect.py` |
+| Recipe | `recipes/fpq_voc.md` |
+
+Total loss: detector multi-task (box+obj+cls) + `λ · L_CSD` (Eq. 22 with
+detection loss replacing CE). SFP is train-only; eval reuses `qat.eval_detect`.
+
 ## Status
 
-Core ops + unit tests. VOC W4A4 LSQ+FPQ vs LSQ-only benchmark is the next
-measurement step (GPU was busy at scaffold time).
+Core ops + SFP inject + VOC train loop + unit tests. VOC mAP numbers pending
+GPU free on the training server (see `RESULTS.md`).
