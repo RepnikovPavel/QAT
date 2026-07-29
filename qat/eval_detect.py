@@ -109,7 +109,7 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
     tcls = torch.cat([s[3] for s in stats])
     if tcls.numel() == 0:
         return {"mAP@0.5": 0.0, "n_images": seen}
-    mp, mr, map50, map = ap_per_class(tp, conf, pcls, tcls, eps=1e-16)[1:5]
+    mp, mr, map50, map = ap_per_class(tp, conf, pcls, tcls, names={}, eps=1e-16)[1:5]
     return {
         "mAP@0.5": float(map50.mean()) if map50.numel() else 0.0,
         "mAP@0.5:0.95": float(map.mean()) if map.numel() else 0.0,
