@@ -395,6 +395,9 @@ def main():
         )
         history.append(r)
         ckpt = os.path.join(args.out, f"ckpt_ep{epoch}.pt")
+        # Unwrap SFP so keys match plain QYOLOv5 (qat.eval_detect / no nested a_quant).
+        if use_sfp:
+            disable_sfp(model)
         torch.save(
             {
                 "epoch": epoch,
@@ -402,9 +405,12 @@ def main():
                 "args": vars(args),
                 "metrics": r,
                 "csd_layers": csd_idxs,
+                "n_sfp": n_sfp,
             },
             ckpt,
         )
+        if use_sfp:
+            enable_sfp(model, p=args.sfp_p)
         if not r["finite"]:
             print("Stopping early due to non-finite loss.", flush=True)
             break

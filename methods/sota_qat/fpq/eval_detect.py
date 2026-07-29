@@ -58,18 +58,18 @@ def main():
     model = QYOLOv5(
         nc=args.nc, quant=quant, wbits=args.wbits, abits=args.abits, use_qgb=False,
     ).to(device)
-    # Match train-time SFP wrappers so state_dict keys for a_quant.* align when
-    # the checkpoint was saved with --fpq (SFPActWrapper nests a_quant).
+    # Checkpoints unwrap SFP before save (plain QYOLOv5 keys). Optional
+    # --sfp-p > 0 re-wraps only if loading a nested-wrapper legacy ckpt.
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
-    ck_args = ck.get("args") or {}
-    want_sfp = float(args.sfp_p) > 0 or bool(ck_args.get("fpq")) and not ck_args.get("no_sfp", False)
-    if want_sfp:
-        p = float(args.sfp_p) if args.sfp_p > 0 else float(ck_args.get("sfp_p", 0.1))
+    sd = ck["model"]
+    nested = any(".a_quant.a_quant." in k or k.endswith(".a_quant.a_quant.step") for k in sd)
+    if nested or float(args.sfp_p) > 0:
+        p = float(args.sfp_p) if args.sfp_p > 0 else 0.1
         enable_sfp(model, p=p)
 
     model.init_quantizers(img_size=args.img_size)
-    model.load_state_dict(ck["model"], strict=False)
-    print("Loaded", args.ckpt, flush=True)
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    print("Loaded", args.ckpt, f"missing={len(missing)} unexpected={len(unexpected)}", flush=True)
 
     test_list = str(Path(args.data) / "test.list")
     ds = VOCDataset(test_list, img_size=args.img_size, augment=False)
