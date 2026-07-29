@@ -10,7 +10,7 @@ Metric: mAP@0.5 on VOC07 test (Q² Table 1 protocol).
 
 | Setting | epochs | limit steps | finite | det loss | csd | notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| *(pending GPU)* | — | — | — | — | — | GPUs busy at wire time |
+| LSQ+FPQ W4A4 | 1 | 2 | **True** | 1.026 | 1.77 | CPU Docker smoke, img=320, batch=2; SFP on 57 convs, CSD layers 4/6/9/13/17/20/23 |
 
 ## VOC mAP@0.5 (W4A4)
 
