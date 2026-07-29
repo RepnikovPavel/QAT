@@ -35,5 +35,10 @@ current task file you were given.
 
 ## When you're blocked or hit your turn budget
 
-- Write the exact blocker + next concrete step into the task file's
-  "## Next step" section, then stop. The supervisor will resume you later.
+- If the blocker is **waiting on something time-based** (a training job still
+  running, an ocrc queue, a cooldown), write the estimated ready-time into the
+  task file as `STATUS: WAITING until YYYY-MM-DD_HH:MM` (24h, server local
+  time) AND STOP. The supervisor will skip this task until that time and move
+  to the next open one. Do NOT keep re-checking the same thing every turn.
+- Otherwise (real blocker) write the exact blocker + next concrete step into
+  the task file's "## Next step" section, then stop. The supervisor resumes you.

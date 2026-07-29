@@ -26,13 +26,18 @@ ensure_tunnel() {
 }
 
 next_open_task() {
+  # Skip tasks marked DONE, or WAITING until a timestamp that hasn't passed.
+  # "STATUS: WAITING until 2026-07-29_15:30"  -> blocked until that time.
+  now=$(date +%Y-%m-%d_%H:%M)
   for t in "${TASK_FILES[@]}"; do
     f="$TASKS/$t"
     [ -f "$f" ] || continue
-    # STATUS: DONE  -> skip ; STATUS: BLOCKED with cooldown handled elsewhere
-    if ! grep -qiE '^STATUS:\s*DONE' "$f"; then
-      echo "$f"; return
-    fi
+    if grep -qiE '^STATUS:\s*DONE' "$f"; then continue; fi
+    wt=$(grep -oiE 'STATUS:\s*WAITING until [0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' "$f | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' || true)
+    # correct grep: extract waiting-until timestamp
+    wt=$(grep -iE '^STATUS:.*WAITING until' "$f" 2>/dev/null | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}' | head -1)
+    if [ -n "$wt" ] && [[ "$wt" > "$now" ]]; then continue; fi
+    echo "$f"; return
   done
   echo ""
 }
