@@ -144,6 +144,9 @@ def main():
     ap.add_argument("--qada-weight", type=float, default=0.01)
     ap.add_argument("--nc", type=int, default=20)
     ap.add_argument("--out", default="/mnt/hdd2/qat_run/run1")
+    ap.add_argument("--pretrained",
+                    default="/mnt/hdd2/qat_run/weights/yolov5s.pt",
+                    help="path to yolov5s.pt (COCO-pretrained body weights)")
     ap.add_argument("--limit", type=int, default=0, help="limit train batches (debug)")
     args = ap.parse_args()
 
@@ -168,6 +171,10 @@ def main():
 
     model = QYOLOv5(nc=args.nc, quant=args.quant, wbits=args.wbits, abits=args.abits,
                     use_qgb=args.qgb).to(device)
+
+    if args.pretrained and os.path.exists(args.pretrained):
+        from .pretrained import load_yolov5s_pretrained
+        load_yolov5s_pretrained(model, args.pretrained)
 
     # Official YOLOv5 loss (reused, not reimplemented)
     from yolov5.utils.loss import ComputeLoss
