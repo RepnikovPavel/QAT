@@ -48,7 +48,7 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
             out, _ = model(imgs)  # decoded (N, n_anchors*nx*ny, 5+nc) in eval
             # out is (N, num_boxes, 5+nc): [xyxy, conf, classes...]
             pred = non_max_suppression(out, conf_thres, iou_thres,
-                                       nc=nc, max_det=max_det)
+                                       max_det=max_det)
             # build target boxes per image in PIXEL xyxy (predictions decode to
             # pixel xyxy, so we convert normalised cxcywh targets accordingly).
             tg = targets_to_yolo(targets, img_size=args.img_size)  # norm cxcywh
