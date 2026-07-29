@@ -23,6 +23,11 @@ dist/
 # Data — never commit datasets, checkpoints or model artifacts
 data/
 datasets/
+# but DO track our qat/data and qat/models source packages
+!qat/data/
+!qat/data/**
+!qat/models/
+!qat/models/**
 *.tar
 *.tar.gz
 *.tgz
@@ -46,3 +51,5 @@ datasets/
 runs/
 wandb/
 mlruns/
+*.pyc
+__pycache__/
