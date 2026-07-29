@@ -127,8 +127,23 @@ class QYOLOv5(nn.Module):
             "label_smoothing": 0.0, "fl_gamma": 0.0,
             "anchor_t": 4.0,
         }
-        self.model = self.det.model  # nn.Sequential-like layer list
-        self.save = self.det.save    # layer indices whose output is reused
+        # NOTE: do NOT register self.model as an attribute (it would duplicate
+        # every weight in state_dict as both `model.*` and `det.model.*`).
+        # Access the layer list via the `model` property below.
+
+        # Inject quantization into Conv layers (skip head if requested).
+        self.qgb_nodes: Dict[int, QGBFusion] = {}
+        self._inject(quant, wbits, abits, quantize_head, use_qgb)
+
+    # ---------------------------------------------------------- accessors
+    @property
+    def model(self):
+        """The official DetectionModel layer list (det.model)."""
+        return self.det.model
+
+    @property
+    def save(self):
+        return self.det.save
 
         # Inject quantization into Conv layers (skip head if requested).
         self.qgb_nodes: Dict[int, QGBFusion] = {}

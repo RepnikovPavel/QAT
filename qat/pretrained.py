@@ -35,14 +35,16 @@ def load_yolov5s_pretrained(qyolo, ckpt_path: str, strict: bool = False,
     skipped = []
     new_sd = {}
     for k, v in dst_sd.items():
-        # Map QYOLOv5 keys (which are qgb_nodes/quantizer params + model.*)
-        # onto the pretrained keys. Pretrained uses 'model.<i>.<...>'.
-        if k in src_sd and src_sd[k].shape == v.shape:
-            new_sd[k] = src_sd[k]
+        # QYOLOv5 stores the layer list under self.det, so dst keys are
+        # 'det.model.<i>...'. Pretrained keys are 'model.<i>...'. Strip the
+        # 'det.' prefix to align them.
+        src_key = k[len("det."):] if k.startswith("det.") else k
+        if src_key in src_sd and src_sd[src_key].shape == v.shape:
+            new_sd[k] = src_sd[src_key]
             transferred += 1
         else:
             new_sd[k] = v  # keep existing init
-            if k.startswith("model.24.") is False and not k.startswith("qgb_nodes"):
+            if not k.startswith("det.model.24."):
                 skipped.append(k)
     qyolo.load_state_dict(new_sd, strict=False)
     if verbose:
