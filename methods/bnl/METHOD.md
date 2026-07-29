@@ -110,10 +110,11 @@ paper formulas above are taken from `papers/2509.07025/document.md`.
 
 ## Detection adaptation plan
 
-1. Unit-test BNL layers (forward binary ∈ {0,1}, STE grads flow, normalize
-   stats).
-2. Swap YOLOv5s body convs for `BinaryNormalizedConv2d` (stem + Detect head
-   stay FP32), train VOC, report mAP@0.5.
+1. ~~Unit-test BNL layers (forward binary ∈ {0,1}, STE grads flow, normalize
+   stats).~~ done (12 tests in `qat-repro`).
+2. ~~Swap YOLOv5s body convs for `BinaryNormalizedConv2d` (stem + Detect head
+   stay FP32).~~ done (`bnl/yolo_bnl.py`, 56 BNL convs). VOC smoke finite.
+   Full train + mAP@0.5 still pending.
 3. Compare to FP32 YOLOv5s and to `methods/bitnet_det` when available.
-4. Numbers go in `RESULTS.md` (paper classification table already filled;
-   detection table filled after runs).
+4. Numbers go in `RESULTS.md` (paper classification table filled; detection
+   smoke logged; mAP table after full runs).
