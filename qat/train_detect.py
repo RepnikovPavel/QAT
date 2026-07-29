@@ -36,18 +36,27 @@ def set_seed(seed: int = 0) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def targets_to_yolo(targets, batch_idx_offset=0):
-    """Convert list of (M,5) [cls,cx,cy,w,h] (pixels) -> (N,6) [img,cls,x1,y1,x2,y2]."""
+def targets_to_yolo(targets, img_size=640):
+    """Convert VOCDataset labels to the ComputeLoss target format.
+
+    yolov5 ComputeLoss.build_targets expects targets of shape (N,6) with
+    columns (image_idx, class, cx, cy, w, h) in NORMALISED [0,1] coordinates
+    (it multiplies by grid-space gain internally).
+
+    VOCDataset returns [cls, cx, cy, w, h] in letterboxed pixels, so we divide
+    by img_size.
+    """
     out = []
     for i, t in enumerate(targets):
         if t.numel() == 0:
             continue
         cls = t[:, 0:1]
         cx, cy, w, h = t[:, 1], t[:, 2], t[:, 3], t[:, 4]
-        x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
-        img = torch.full((t.shape[0], 1), float(i + batch_idx_offset))
-        out.append(torch.cat([img, cls, x1[:, None], y1[:, None],
-                              x2[:, None], y2[:, None]], 1))
+        img = torch.full((t.shape[0], 1), float(i))
+        row = torch.cat([img, cls,
+                         (cx / img_size)[:, None], (cy / img_size)[:, None],
+                         (w / img_size)[:, None], (h / img_size)[:, None]], 1)
+        out.append(row)
     return torch.cat(out, 0) if out else torch.zeros((0, 6))
 
 
@@ -59,8 +68,8 @@ def build_optimizer(model, lr, momentum, weight_decay):
 
 
 def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
-                    qada_loss, device, epoch, qada_weight, log_every=50,
-                    qada_targets=None):
+                    qada_loss, device, epoch, qada_weight, img_size=640,
+                    log_every=50, qada_targets=None):
     model.train()
     t0 = time.time()
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
@@ -68,7 +77,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
 
     for it, (imgs, targets) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
-        tg = targets_to_yolo(targets).to(device)
+        tg = targets_to_yolo(targets, img_size).to(device)
 
         # Forward: teacher (FP, no grad) for Q-ADA + student (quantized)
         if qada_loss is not None and qada_targets is not None:
@@ -200,7 +209,8 @@ def main():
     for epoch in range(args.epochs):
         r = train_one_epoch(model, train_loader, optimizer, scheduler,
                             compute_loss, qada_loss, device, epoch,
-                            args.qada_weight, qada_targets=qada_targets)
+                            args.qada_weight, img_size=args.img_size,
+                            qada_targets=qada_targets)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)

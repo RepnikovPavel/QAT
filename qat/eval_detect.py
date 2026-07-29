@@ -50,7 +50,7 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
             pred = non_max_suppression(out, conf_thres, iou_thres,
                                        nc=nc, max_det=max_det)
             # build target boxes per image
-            tg = targets_to_yolo(targets)  # (M,6) [img,cls,x1y1x2y2]
+            tg = targets_to_yolo(targets, img_size=args.img_size)  # (M,6) norm [img,cls,cxcywh]
             for i, det in enumerate(pred):
                 labels = tg[tg[:, 0] == i][:, 1:]  # (L,5) cls+xyxy
                 nl = labels.shape[0]
