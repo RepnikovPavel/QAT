@@ -36,11 +36,12 @@ below for reference. Detection numbers are filled after VOC runs.
 | --- | --- |
 | Date | 2026-07-29 |
 | Hardware | server GPU1 RTX 5060 Ti, Docker `qat-repro` |
-| Config | img=320, batch=2, limit=6 steps, Adam lr=1e-4, pretrained yolov5s.pt |
+| Config | img=320, batch=2, limit=4–6 steps, Adam lr=1e-4, pretrained yolov5s.pt |
 | n_bnl_convs | 56 |
-| loss (it0 → avg) | 1.639 → 1.040 |
+| pretrained transfer | 63/125 tensors (body kernels; head nc differs) |
+| loss (smoke2 it0 → avg) | 1.630 → 1.148 |
 | finite | **True** |
-| Log | `/mnt/hdd2/qat_run/bnl_smoke/` |
+| Log | `/mnt/hdd2/qat_run/bnl_smoke2/` |
 
 Full VOC train (50 ep, mAP@0.5) still pending — both GPUs were occupied by q2 M1 runs at smoke time.
 
