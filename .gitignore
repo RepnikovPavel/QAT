@@ -53,3 +53,7 @@ wandb/
 mlruns/
 *.pyc
 __pycache__/
+
+# ocrc parsed papers: keep only the markdown text, not images/layout dumps
+papers/**/images/
+papers/**/layout/
