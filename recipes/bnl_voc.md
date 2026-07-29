@@ -79,7 +79,33 @@ FP32 baseline (no BNL injection):
 | Data | VOC07+12 trainval, VOC07 test | same as Q² |
 | Pretrained | yolov5s.pt COCO body if present | Q² Appendix 8.1 style |
 
-## 5. Results
+## 5. Eval mAP@0.5
+
+```sh
+docker run --rm --gpus '"device=0"' --shm-size=16g --name bnl_eval \
+  -v "$PWD":/workspace -v /mnt/hdd2:/mnt/hdd2 -w /workspace \
+  -e PYTHONPATH=/workspace/methods/bnl:/workspace/methods/q2 \
+  -e WANDB_MODE=disabled \
+  qat-repro \
+  python -u methods/bnl/eval_detect.py \
+    --ckpt /mnt/hdd2/qat_run/bnl_voc/ckpt_ep49.pt \
+    --data /mnt/hdd2/qat_run/voc_yolo \
+    --batch 16 --workers 4
+```
+
+Writes `eval_result.txt` next to the checkpoint. Copy mAP into
+`methods/bnl/RESULTS.md`.
+
+## 6. Results
 
 Fill `methods/bnl/RESULTS.md` detection table after full runs (mAP@0.5).
 Smoke only confirms finite training loss, not mAP.
+
+## 7. Wait-and-launch (when GPUs busy)
+
+If both GPUs are occupied, poll until free then start train:
+
+```sh
+# on GPU server, from ~/QAT_main after git pull
+bash recipes/bnl_wait_launch.sh
+```
