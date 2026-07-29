@@ -29,7 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python -m pip install --upgrade pip
 
 # PyTorch stable with CUDA 12.8 wheels (supports Blackwell sm_120, RTX 5060 Ti).
-RUN pip install torch==2.9.1 torchvision==0.9.1 --index-url https://download.pytorch.org/whl/cu128
+# Let pip resolve the compatible torch/torchvision pair for cu128.
+RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # Project Python deps (yolov5 pins the official ultralytics/yolov5 package so
 # we use the real DetectionModel/parse_model/ComputeLoss, no reimplementation).
