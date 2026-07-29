@@ -3,7 +3,8 @@
 Paper: arXiv:2503.11159 (classification only; no published VOC/COCO numbers).
 Adaptation: `methods/sota_qat/fpq/` on top of `methods/q2` LSQ YOLOv5s.
 
-Metric: mAP@0.5 on VOC07 test (same as Q² Table 1 protocol).
+Hardware: GPU server 2× RTX 5060 Ti, Docker `qat-repro`.
+Metric: mAP@0.5 on VOC07 test (Q² Table 1 protocol).
 
 ## Smoke (finite-loss check)
 
@@ -13,10 +14,11 @@ Metric: mAP@0.5 on VOC07 test (same as Q² Table 1 protocol).
 
 ## VOC mAP@0.5 (W4A4)
 
-| Method | SFP p | CSD λ | epochs | batch | mAP@0.5 | notes |
+| Method | SFP p | CSD λ (mean) | epochs | batch | mAP@0.5 | notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| LSQ baseline | — | — | 50 | 16 | — | pending |
-| LSQ + FPQ (SFP+CSD) | 0.1 | 0.01 | 50 | 16 | — | pending |
+| LSQ baseline | — | — | 50 | 16 | — | `fpq_lsq_w4a4_base` |
+| LSQ + FPQ (SFP+CSD) | 0.1 | 1.0 | 50 | 16 | — | `fpq_lsq_w4a4` |
 
-Q² paper Table 1 LSQ W4A4 YOLOv5s VOC reference: **76.9** mAP@0.5 (different train
-setup/hardware; compare LSQ vs LSQ+FPQ under this recipe first).
+Q² Table 1 LSQ W4A4 YOLOv5s VOC reference: **76.9** mAP@0.5 (different setup;
+compare LSQ vs LSQ+FPQ under this recipe first). Paper CIFAR-10 ResNet-18 W2A4:
+LSQ 88.36 → FPQ 89.92.
