@@ -7,6 +7,9 @@ REPO="/home/user/ZCodeProject/QAT"
 TASKS="/home/user/.grok/tasks"
 LOG="$REPO/logs/supervisor.log"
 mkdir -p "$REPO/logs"
+
+# cron has a minimal PATH; ensure grok, ssh, docker, ocrc are findable.
+export PATH="/home/user/.grok/bin:/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH"
 MAX_RUNTIME="${MAX_RUNTIME:-3600}"   # default 1h per supervisor invocation
 TURNS="${GROK_TURNS:-40}"            # grok agent turns per task chunk
 START=$(date +%s)

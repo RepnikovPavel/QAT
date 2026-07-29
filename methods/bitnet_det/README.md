@@ -1,21 +1,31 @@
-# BitNet-style binary detection (XNOR + popcount)
+# BitNet-style ternary detection (W1.58 A8)
 
-Goal: bring 1-bit / 1.58-bit weight quantization (BitNet b1.58, XNOR-popcount
-convolution) from microsoft/BitNet into 2D object detection and benchmark on
-PASCAL VOC + COCO.
+Port of Microsoft BitNet b1.58 training BitLinear into YOLOv5s for 2D detection,
+plus an XNOR-Net binary (W1A1) variant with a popcount reference kernel.
 
-## Plan
+## Quick start
 
-1. Port the BitLinear layer (1.58-bit ternary weights, per-token LayNorm,
-   absmax activations) from microsoft/BitNet into a detector-friendly module.
-2. Replace YOLOv5 conv blocks with BitLinear where applicable (keep first/last
-   and detection head in higher precision).
-3. Train from scratch / fine-tune on VOC + COCO, measure mAP@0.5 and inference
-   cost (XNOR+popcount throughput vs FP conv).
+```sh
+# unit tests
+PYTHONPATH=methods/bitnet_det python -m pytest methods/bitnet_det/tests/ -q
+
+# VOC train (GPU server + Docker) — see recipes/bitnet_voc.md
+```
+
+## Layout
+
+| File | Description |
+| --- | --- |
+| `bitlinear.py` | Official FAQ Fig. 3 BitLinear + detector BitConv2d |
+| `xnor_conv.py` | XNOR+popcount binary conv (fake-quant + ref) |
+| `yolo_bitnet.py` | YOLOv5s mid-body injection (stem + Detect FP) |
+| `train_detect.py` | VOC training |
+| `METHOD.md` | formulas and source mapping |
+| `tests/` | ternary property, popcount bit-exactness, YOLO inject |
 
 ## References
 
-- microsoft/BitNet (b1.58): https://github.com/microsoft/BitNet
-- XNOR-Net (original binary conv): arXiv:1603.05279
-
-Code lands here as the port matures.
+- BitNet b1.58: arXiv:2402.17764
+- Training code FAQ: microsoft/unilm `bitnet/The-Era-of-1-bit-LLMs__Training_Tips_Code_FAQ.pdf`
+- Inference: https://github.com/microsoft/BitNet
+- XNOR-Net: arXiv:1603.05279
