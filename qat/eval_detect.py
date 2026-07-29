@@ -135,6 +135,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = QYOLOv5(nc=args.nc, quant=args.quant, wbits=args.wbits, abits=args.abits,
                     use_qgb=args.qgb).to(device)
+    model.init_quantizers(img_size=args.img_size)
     ck = torch.load(args.ckpt, map_location=device)
     model.load_state_dict(ck["model"])
     print("Loaded", args.ckpt, flush=True)

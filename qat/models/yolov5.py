@@ -206,6 +206,26 @@ class QYOLOv5(nn.Module):
             energies[idx] = fuser.update_dual()
         return energies
 
+    @torch.no_grad()
+    def init_quantizers(self, img_size: int = 640) -> None:
+        """Run a dummy forward to initialise lazy quantizer parameters.
+
+        LSQ/N2UQ/PACT lazily create per-channel step/range parameters on the
+        first real input. A freshly-built model has scalar placeholders, so
+        loading a trained checkpoint (with per-channel params) would size-
+        mismatch. Call this once before load_state_dict on a fresh model.
+        """
+        was_training = self.training
+        self.eval()
+        dummy = torch.zeros(1, 3, img_size, img_size)
+        device = next(self.parameters()).device
+        try:
+            self(dummy.to(device))
+        except Exception:
+            pass
+        if was_training:
+            self.train()
+
     # ---------------------------------------------------------- forward
     def forward(self, x):
         # Reuse the official DetectionModel._forward_once routing (handles the
