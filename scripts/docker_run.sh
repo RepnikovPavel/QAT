@@ -21,7 +21,8 @@ fi
 docker run --rm --gpus all \
     --shm-size=16g \
     -v "$REPO_DIR:/workspace" \
-    -v /mnt/hdd2:/mnt/hdd2:ro \
+    -v /mnt/hdd2:/mnt/hdd2 \
     -e WANDB_MODE=disabled \
+    -e PYTHONPATH=/workspace \
     -w /workspace \
     "$IMAGE" "$@"

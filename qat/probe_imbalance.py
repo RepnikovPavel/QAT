@@ -70,6 +70,9 @@ def run(args):
     def build(qgb):
         m = QYOLOv5(nc=args.nc, quant=args.quant, wbits=args.wbits,
                     abits=args.abits, use_qgb=qgb).to(device)
+        if args.pretrained:
+            from .pretrained import load_yolov5s_pretrained
+            load_yolov5s_pretrained(m, args.pretrained, verbose=False)
         from yolov5.utils.loss import ComputeLoss
         loss = ComputeLoss(m.det)
         opt = build_optimizer(m, args.lr, 0.9, 1e-4)
@@ -151,6 +154,8 @@ def main():
     ap.add_argument("--nc", type=int, default=20)
     ap.add_argument("--concat-idx", type=int, default=16)
     ap.add_argument("--mode", default="both", choices=["both", "baseline_only"])
+    ap.add_argument("--pretrained", default="/mnt/hdd2/qat_run/weights/yolov5s.pt",
+                    help="path to yolov5s.pt (COCO-pretrained body weights)")
     ap.add_argument("--out", default="/mnt/hdd2/qat_run/m0")
     args = ap.parse_args()
     run(args)
