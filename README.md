@@ -35,9 +35,20 @@ scripts/       # docker_run.sh + server launch helpers
 
 ## Environment (GPU server)
 
-2× RTX 5060 Ti (Blackwell sm_120), reached via ssh (see recipes). All compute
-runs in Docker (`docker/Dockerfile`, torch 2.11 + cu128). Datasets are
-pre-staged at `/mnt/hdd2/datasets/{voc,coco,busi}` on the server.
+Two supported target boxes, each with its own Dockerfile (CUDA 12 **and** CUDA
+13 compatible). Pick the one matching the GPU:
+
+| GPU | arch | Dockerfile | image | recipe |
+| --- | --- | --- | --- | --- |
+| 2× RTX 4090 | Ada sm_89 | `docker/Dockerfile.cu126` (py3.10) | `qat-repro-cu126` | `recipes/q2_voc_4090.md` |
+| 2× RTX 5060 Ti | Blackwell sm_120 | `docker/Dockerfile` (cu128) | `qat-repro` | `recipes/q2_voc.md` |
+
+`cu126` is the shared denominator: the cu126 wheel index builds for sm_89/sm_86
+and also loads on a CUDA-13 host (the driver's minor-version forward
+compatibility runs CUDA-12.x binaries). The Blackwell `cu128` image does NOT
+start on GeForce Ada/Ampere (no forward-compat licence). Use
+`scripts/docker_run.sh` with `PLATFORM=cu126|blackwell` and `DATA_DIR=<disk>` to
+select the image and dataset mount.
 
 ## License
 
