@@ -34,8 +34,15 @@ def _iou_matrix(boxes1, boxes2):
 
 
 def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
-             nms_thres=0.6, max_det=300, img_size=640):
-    """Compute mAP@0.5 over the loader."""
+             nms_thres=0.45, max_det=300, img_size=640):
+    """Compute mAP@0.5 over the loader.
+
+    Notes
+    -----
+    yolov5 ``ap_per_class`` returns ``(tp, fp, p, r, f1, ap, unique_classes)``.
+    ``ap`` has shape ``(n_classes, n_iou)``; with a single IoU threshold column
+    (mAP@0.5) we report ``ap[:, 0].mean()``.
+    """
     from yolov5.utils.general import non_max_suppression
     from yolov5.utils.metrics import ap_per_class
 
@@ -46,8 +53,8 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
         for imgs, targets in loader:
             imgs = imgs.to(device)
             out, _ = model(imgs)  # decoded (N, n_anchors*nx*ny, 5+nc) in eval
-            # out is (N, num_boxes, 5+nc): [xyxy, conf, classes...]
-            pred = non_max_suppression(out, conf_thres, iou_thres,
+            # NMS IoU threshold is independent of the mAP matching IoU.
+            pred = non_max_suppression(out, conf_thres, nms_thres,
                                        max_det=max_det)
             # build target boxes per image in PIXEL xyxy (predictions decode to
             # pixel xyxy, so we convert normalised cxcywh targets accordingly).
@@ -66,33 +73,39 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                     labels_cls = torch.zeros((0, 1), device=device)
                 if det is None or len(det) == 0:
                     if nl:
-                        stats.append((torch.zeros(0), torch.zeros(0),
+                        stats.append((torch.zeros((0, 1)), torch.zeros(0),
                                       torch.zeros(0), torch.tensor(tcls)))
+                    seen += 1
                     continue
                 det = det.to(device)
                 dbox = det[:, :4]
                 dconf = det[:, 4]
                 dcls = det[:, 5].long()
-                # match
+                # match predictions to GT at iou_thres (mAP@0.5 => 0.5)
                 if nl:
                     # tp shape (n_pred, 1) as expected by yolov5 ap_per_class
                     correct = torch.zeros((dbox.shape[0], 1), dtype=torch.float32, device=device)
                     iou = _iou_matrix(dbox, tbox)
-                    # for each class
                     for c in torch.unique(torch.tensor(tcls, device=device)):
                         ti = (labels_cls[:, 0] == c).nonzero().view(-1)
                         di = (dcls == c).nonzero().view(-1)
                         if len(ti) and len(di):
-                            m = iou[di][:, ti].cpu()
-                            if m.numel():
-                                x = torch.where(m >= iou_thres)
-                                if x[0].numel():
-                                    matched = set()
-                                    for j, k in zip(*x):
-                                        if k.item() not in matched:
-                                            correct[di[j], 0] = 1.0
-                                            matched.add(k.item())
-                                            break
+                            m = iou[di][:, ti]
+                            # Greedy match highest-IoU first
+                            pairs = torch.nonzero(m >= iou_thres, as_tuple=False)
+                            if pairs.numel():
+                                # sort by IoU descending
+                                ious = m[pairs[:, 0], pairs[:, 1]]
+                                order = torch.argsort(ious, descending=True)
+                                matched_gt = set()
+                                matched_pred = set()
+                                for idx in order.tolist():
+                                    pi, gi = pairs[idx].tolist()
+                                    if pi in matched_pred or gi in matched_gt:
+                                        continue
+                                    correct[di[pi], 0] = 1.0
+                                    matched_pred.add(pi)
+                                    matched_gt.add(gi)
                     stats.append((correct.cpu(), dconf.cpu(), dcls.cpu(),
                                   torch.tensor(tcls)))
                 else:
@@ -103,22 +116,29 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
     if not stats:
         return {"mAP@0.5": 0.0, "n_images": 0}
     # ap_per_class expects (tp, conf, pred_cls, target_cls)
-    tp = torch.cat([s[0] for s in stats]).float()
-    conf = torch.cat([s[1] for s in stats]).float()
-    pcls = torch.cat([s[2] for s in stats])
-    tcls = torch.cat([s[3] for s in stats])
-    if tcls.numel() == 0:
+    tp = torch.cat([s[0] for s in stats]).float().numpy()
+    conf = torch.cat([s[1] for s in stats]).float().numpy()
+    pcls = torch.cat([s[2] for s in stats]).float().numpy()
+    tcls = torch.cat([s[3] for s in stats]).float().numpy()
+    if tcls.size == 0:
         return {"mAP@0.5": 0.0, "n_images": seen}
-    mp, mr, map50, map = ap_per_class(tp, conf, pcls, tcls, names={}, eps=1e-16)[1:5]
+    # returns: tp, fp, p, r, f1, ap, unique_classes
+    _tp, _fp, p, r, f1, ap, _uc = ap_per_class(
+        tp, conf, pcls, tcls, plot=False, names=(), eps=1e-16
+    )
+
     def _m(x):
         x = np.asarray(x)
         return float(x.mean()) if x.size else 0.0
 
+    map50 = _m(ap[:, 0]) if ap.ndim == 2 and ap.shape[1] >= 1 else _m(ap)
+    map_all = _m(ap)  # mean over classes (and IoU cols if multi)
+
     return {
-        "mAP@0.5": _m(map50),
-        "mAP@0.5:0.95": _m(map),
-        "precision": _m(mp),
-        "recall": _m(mr),
+        "mAP@0.5": map50,
+        "mAP@0.5:0.95": map_all if (ap.ndim == 2 and ap.shape[1] > 1) else map50,
+        "precision": _m(p),
+        "recall": _m(r),
         "n_images": seen,
     }
 
@@ -140,9 +160,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = QYOLOv5(nc=args.nc, quant=args.quant, wbits=args.wbits, abits=args.abits,
                     use_qgb=args.qgb).to(device)
+    # Size per-channel step tensors so checkpoint shapes match.
     model.init_quantizers(img_size=args.img_size)
-    ck = torch.load(args.ckpt, map_location=device)
-    model.load_state_dict(ck["model"])
+    ck = torch.load(args.ckpt, map_location=device, weights_only=False)
+    # strict=False: older ckpts may lack the `_initialised` buffer.
+    missing, unexpected = model.load_state_dict(ck["model"], strict=False)
+    if missing or unexpected:
+        print(f"[eval] load_state_dict missing={list(missing)[:6]} "
+              f"unexpected={list(unexpected)[:6]}", flush=True)
+    # Prevent re-init of steps on the next forward after a partial load.
+    for mod in model.modules():
+        if hasattr(mod, "_initialised") and torch.is_tensor(mod._initialised):
+            mod._initialised.fill_(True)
     print("Loaded", args.ckpt, flush=True)
 
     test_list = str(Path(args.data) / "test.list")

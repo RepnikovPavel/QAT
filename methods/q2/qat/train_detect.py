@@ -61,22 +61,53 @@ def targets_to_yolo(targets, img_size=640):
 
 
 def build_optimizer(model, lr, momentum, weight_decay):
-    """SGD over weights, but quantizer step/threshold params are optimised too."""
-    params = [p for p in model.parameters() if p.requires_grad]
-    return torch.optim.SGD(params, lr=lr, momentum=momentum,
-                           weight_decay=weight_decay, nesterov=True)
+    """SGD with no weight-decay on quantizer scales / Q-GBFusion duals.
+
+    Quantizer ``step``/threshold parameters are low-dimensional and highly
+    sensitive to L2 shrinkage (which drove LSQ scales negative/exploded in
+    early M1 runs). Keep them in a separate param group with weight_decay=0.
+    """
+    quant_ids = set()
+    quant_params = []
+    for name, mod in model.named_modules():
+        # LSQ/PACT/N2UQ step or clip parameters
+        for attr in ("step", "alpha", "clip", "threshold", "scale"):
+            if hasattr(mod, attr) and isinstance(getattr(mod, attr), nn.Parameter):
+                p = getattr(mod, attr)
+                if p.requires_grad and id(p) not in quant_ids:
+                    quant_params.append(p)
+                    quant_ids.add(id(p))
+    weight_params = [p for p in model.parameters()
+                     if p.requires_grad and id(p) not in quant_ids]
+    return torch.optim.SGD(
+        [
+            {"params": weight_params, "weight_decay": weight_decay},
+            {"params": quant_params, "weight_decay": 0.0},
+        ],
+        lr=lr, momentum=momentum, nesterov=True,
+    )
+
+
+def project_quant_steps(model):
+    """Keep LSQ/N2UQ step parameters strictly positive after the optim step."""
+    with torch.no_grad():
+        for mod in model.modules():
+            if hasattr(mod, "step") and isinstance(getattr(mod, "step"), nn.Parameter):
+                mod.step.data.clamp_(min=1e-8)
 
 
 def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                     qada_loss, device, epoch, qada_weight, img_size=640,
                     log_every=50, qada_targets=None, use_amp=False,
-                    scaler=None):
+                    scaler=None, limit=0):
     model.train()
     t0 = time.time()
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
     nb = 0
 
     for it, (imgs, targets) in enumerate(loader):
+        if limit and it >= limit:
+            break
         imgs = imgs.to(device, non_blocking=True)
         tg = targets_to_yolo(targets, img_size).to(device)
 
@@ -121,6 +152,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
             scaler.update()
         else:
             optimizer.step()
+        project_quant_steps(model)
         scheduler.step()
 
         running["loss"] += float(loss.detach())
@@ -202,8 +234,24 @@ def main():
         from .pretrained import load_yolov5s_pretrained
         load_yolov5s_pretrained(model, args.pretrained)
 
+    # Initialise LSQ/N2UQ/PACT scales on a real training batch (not zeros), so
+    # per-channel weight steps get a sensible magnitude before the first update.
+    if args.quant is not None:
+        model.train()
+        with torch.no_grad():
+            imgs0, _ = next(iter(DataLoader(
+                train_ds, batch_size=min(args.batch, 8), shuffle=True,
+                num_workers=0, collate_fn=collate_detection,
+            )))
+            model(imgs0.to(device))
+        print(f"[quant] initialised scales on a real batch ({tuple(imgs0.shape)})",
+              flush=True)
+
     # Official YOLOv5 loss (reused, not reimplemented)
     from yolov5.utils.loss import ComputeLoss
+    # Match official hyp scaling for class count / image size (VOC nc=20).
+    model.det.hyp["cls"] *= args.nc / 80.0
+    model.det.hyp["obj"] *= (args.img_size / 640.0) ** 2
     compute_loss = ComputeLoss(model.det, autobalance=False)
 
     qada_loss = None
@@ -223,6 +271,8 @@ def main():
         model._compiled = True
 
     steps_per_epoch = len(train_loader)
+    if args.limit and args.limit > 0:
+        steps_per_epoch = min(steps_per_epoch, args.limit)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=args.lr, epochs=args.epochs, steps_per_epoch=steps_per_epoch,
         final_div_factor=1.0 / args.final_ratio, pct_start=0.1,
@@ -238,7 +288,7 @@ def main():
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,
                             qada_targets=qada_targets, use_amp=args.amp,
-                            scaler=scaler)
+                            scaler=scaler, limit=args.limit)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)

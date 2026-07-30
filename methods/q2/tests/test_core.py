@@ -39,9 +39,54 @@ def test_lsq_step_reduces_error():
         # initialise step sensibly
         with torch.no_grad():
             q.step.fill_(2 * x.std() / (2 ** (bw - 1)))
+            q._initialised.fill_(True)
         xq, _ = q.quantize(x)
         errs[bw] = (xq - x).abs().mean().item()
     assert errs[8] < errs[4] < errs[2]
+
+
+def test_lsq_step_grad_is_scaled_and_finite():
+    """Scale gradients must stay finite and not explode without g."""
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)
+    x = torch.randn(8, 16, 32, 32, requires_grad=True) * 2
+    xq, s = q.quantize(x)
+    xq.pow(2).mean().backward()
+    assert q.step.grad is not None
+    assert torch.isfinite(q.step.grad).all()
+    # With g = 1/sqrt(Qp*N), |grad| should be small relative to unscaled.
+    assert q.step.grad.abs().max().item() < 1.0
+
+
+def test_lsq_step_stable_under_sgd():
+    """A few SGD steps on a large activation tensor must not explode s.
+
+    Regression for M1: the old STE scale-path produced first-layer act steps
+    of O(1e3) within an epoch; with the corrected Esser gradient + g-factor
+    the step should stay O(init).
+    """
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)
+    # Init on a real tensor, then optimise a trivial reconstruction loss.
+    x0 = torch.randn(4, 32, 64, 64) * 2
+    with torch.no_grad():
+        q.quantize(x0)  # triggers Esser init
+    s0 = float(q.step.detach())
+    opt = torch.optim.SGD([q.step], lr=0.01)
+    for _ in range(50):
+        x = torch.randn(4, 32, 64, 64) * 2
+        xq, _ = q.quantize(x)
+        loss = (xq - x).pow(2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        with torch.no_grad():
+            q.step.clamp_(min=1e-8)
+    s1 = float(q.step.detach())
+    assert math.isfinite(s1)
+    # Stay within ~10x of the initialised step (not 1000x).
+    assert s1 < 10.0 * s0 + 1e-3
+    assert s1 > 0.0
 
 
 # ---------------------------------------------------------- Q-GBFusion
