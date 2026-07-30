@@ -39,7 +39,7 @@ loader, targets format, official ComputeLoss wiring, and the fixed
 
 ## M1/M2 — QAT runs (in progress)
 
-Three bugs were found and two fixed during M1 bring-up; the third is open:
+Bugs found and fixed during M1 bring-up; one QAT-schedule issue remains open:
 
 1. **FIXED** — eval_detect mis-unpacked `ap_per_class`'s
    `(tp,fp,p,r,f1,ap,uc)` return (commit 5771a13). Was reporting fp as
@@ -48,14 +48,19 @@ Three bugs were found and two fixed during M1 bring-up; the third is open:
    destroyed pretrained features (loss stuck at 5.4, obj conf<0.1). Added
    `--quant-warmup-epochs` (commit d4912dc): FP warmup then enable fake-quant.
    After the fix QAT loss stays ~1.25 (FP ep1 was 0.65).
-3. **OPEN** — train/eval discrepancy under quantization: with quant ON, train
-   loss is ~1.25 but eval gives mAP@0.5≈0.003 with high recall (0.54) and very
-   low precision (0.03) — i.e. the model detects objects but box coordinates
-   are poor. FP (quant=None) does not show this (eval mAP 0.52). Likely the
-   Detect-head anchor/stride decode is sensitive to quantized neck features.
-   Investigating before the M1/M2 numbers are reportable.
+3. **FIXED** — LSQ lazy per-channel init OOM'd mid-epoch when quant enabled at
+   ep[warmup] (commit 47ed7e5): now init_quantizers() materialises params up
+   front.
+4. **OPEN — objectness collapse on quant enable.** After warmup, switching
+   fake-quant ON at the paper's lr=0.00334 collapses the objectness head:
+   measured raw obj-sigmoid max per scale drops to **0.001 / 0.005 / 0.106**
+   (vs FP ~0.75), so NMS keeps nothing and mAP@0.5=0. The box/cls losses stay
+   low (so total loss ~1.24 looks "fine") but obj is dead. This is a known
+   QAT-YOLO failure mode: the large first-step under quantization destroys the
+   obj head. Testing a lower post-warmup lr (0.0005) and a quant-onboarding
+   schedule. FP sanity (quant=None) does NOT show this (eval mAP 0.52).
 
 | Run | ours | paper |
 | --- | --- | --- |
-| Baseline (LSQ W4A4) | pending QAT-decode fix | 76.9 |
-| + Q² (Q-GBFusion + Q-ADA) | pending QAT-decode fix | 78.9 (+2.0) |
+| Baseline (LSQ W4A4) | pending QAT-schedule fix (#4) | 76.9 |
+| + Q² (Q-GBFusion + Q-ADA) | pending QAT-schedule fix (#4) | 78.9 (+2.0) |
