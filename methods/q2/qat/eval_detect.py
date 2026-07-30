@@ -109,16 +109,32 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
     tcls = torch.cat([s[3] for s in stats])
     if tcls.numel() == 0:
         return {"mAP@0.5": 0.0, "n_images": seen}
-    mp, mr, map50, map = ap_per_class(tp, conf, pcls, tcls, names={}, eps=1e-16)[1:5]
+    # ap_per_class returns: tp, fp, p, r, f1, ap, unique_classes
+    # where p/r/f1 have shape (nc, 1000) (per-conf-threshold) and ap has (nc, 10)
+    # for IoU 0.5..0.95. mAP@0.5 = ap[:, 0].mean().
+    _tp, _fp, p, r, f1, ap, _uc = ap_per_class(tp, conf, pcls, tcls, names={},
+                                               eps=1e-16)
     def _m(x):
         x = np.asarray(x)
         return float(x.mean()) if x.size else 0.0
 
+    # p/r at the operating point = value at the F1-optimal confidence threshold
+    # (column where f1 is max). Use per-class best f1's conf column, averaged.
+    f1_arr = np.asarray(f1)  # (nc, 1000)
+    p_arr = np.asarray(p)
+    r_arr = np.asarray(r)
+    if f1_arr.size:
+        best = f1_arr.argmax(axis=1)  # (nc,)
+        precision = float(np.mean([p_arr[i, best[i]] for i in range(p_arr.shape[0])]))
+        recall = float(np.mean([r_arr[i, best[i]] for i in range(r_arr.shape[0])]))
+    else:
+        precision = recall = 0.0
+
     return {
-        "mAP@0.5": _m(map50),
-        "mAP@0.5:0.95": _m(map),
-        "precision": _m(mp),
-        "recall": _m(mr),
+        "mAP@0.5": float(np.asarray(ap)[:, 0].mean()) if ap.shape[0] else 0.0,
+        "mAP@0.5:0.95": _m(ap),
+        "precision": precision,
+        "recall": recall,
         "n_images": seen,
     }
 
