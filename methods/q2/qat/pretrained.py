@@ -56,14 +56,15 @@ def load_yolov5s_pretrained(qyolo, ckpt_path: str, strict: bool = False,
 
 
 def load_qyolo_state_dict(qyolo, ckpt_path: str, verbose: bool = True) -> dict:
-    """Load a previously-trained QYOLOv5 checkpoint (our own format) into ``qyolo``.
+    """Load a previously-trained YOLOv5/VOC checkpoint into ``qyolo``.
 
-    Unlike ``load_yolov5s_pretrained`` (which reads an official COCO yolov5s.pt
-    DetectionModel and must skip the nc=80 head), this loads a checkpoint saved
-    by our own ``train_detect`` (``{"model": qyolo.state_dict(), ...}``). Such a
-    checkpoint already has a VOC (nc=20) Detect head, so it transfers the head
-    too — this is the "initialized from full-precision pretrained checkpoint"
-    step of Q^2 Appendix 8.1, applied to a VOC-FP checkpoint.
+    Two source formats are handled (matched by key):
+      * our own ``train_detect`` ckpt — keys already start with ``det.model.``;
+      * an official ``ultralytics/yolov5`` train ckpt — keys start with
+        ``model.`` (no ``det.`` prefix), so we also try stripping ``det.``.
+    In both cases a VOC (nc=20) Detect head transfers too — this is the
+    "initialized from full-precision pretrained checkpoint" step of Q^2
+    Appendix 8.1.
 
     Quantizer parameters that exist in the target but not the source (e.g. when
     the source was trained FP) are left at their fresh init.
@@ -76,8 +77,14 @@ def load_qyolo_state_dict(qyolo, ckpt_path: str, verbose: bool = True) -> dict:
     transferred = 0
     new_sd = {}
     for k, v in dst_sd.items():
+        # Match either the exact key (our format) or the det.-stripped key
+        # (official yolov5 format: 'model.0...' vs our 'det.model.0...').
+        alt = k[len("det."):] if k.startswith("det.") else k
         if k in src_sd and src_sd[k].shape == v.shape:
             new_sd[k] = src_sd[k]
+            transferred += 1
+        elif alt in src_sd and src_sd[alt].shape == v.shape:
+            new_sd[k] = src_sd[alt]
             transferred += 1
         else:
             new_sd[k] = v

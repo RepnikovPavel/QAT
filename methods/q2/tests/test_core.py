@@ -241,3 +241,34 @@ def test_probe_records_imbalance():
     row = probe.log(step=0)
     assert row["ratio"] > 1.0
     assert row["G_1"] > row["G_0"]
+
+
+# ---------------------------------------------------------- ckpt load formats
+def test_load_qyolo_state_dict_official_key_format(tmp_path):
+    """An official ultralytics/yolov5 ckpt stores keys as 'model.0...' (no
+    'det.' prefix); a QYOLOv5 state_dict uses 'det.model.0...'. The loader must
+    match both so the warm FP-VOC teacher transfers the head. Verified with a
+    synthetic 2-layer state_dict (no yolov5 dependency)."""
+    import torch.nn as nn
+    from qat.pretrained import load_qyolo_state_dict
+
+    class _Toy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # mirror QYOLOv5: det.model is the layer list (keys det.model.0.*)
+            self.det = nn.Module()
+            self.det.model = nn.Sequential(nn.Conv2d(3, 4, 1), nn.Conv2d(4, 4, 1))
+
+    dst = _Toy()
+    # official-format source: keys 'model.0.weight' etc., with head weights
+    src = {"model.0.weight": torch.ones_like(dst.state_dict()["det.model.0.weight"]),
+           "model.0.bias": torch.zeros_like(dst.state_dict()["det.model.0.bias"]),
+           "model.1.weight": torch.full_like(dst.state_dict()["det.model.1.weight"], 7.0),
+           "model.1.bias": torch.zeros_like(dst.state_dict()["det.model.1.bias"])}
+    ck = tmp_path / "official.pt"
+    torch.save({"model": src}, ck)
+    r = load_qyolo_state_dict(dst, str(ck), verbose=False)
+    assert r["transferred"] == 4
+    # the conv-1 weight (the "head") must have taken the official value 7.0
+    assert torch.allclose(dst.det.model[1].weight, torch.full_like(dst.det.model[1].weight, 7.0))
+
