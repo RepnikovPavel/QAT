@@ -35,12 +35,19 @@ class QuantizerBase(nn.Module):
     # subclasses set these
     bit_width: int = 4
     signed: bool = True
+    # when False, forward is identity (used for FP warmup before QAT kicks in)
+    enabled: bool = True
+
+    def enable(self, flag: bool = True) -> None:
+        self.enabled = flag
 
     def quantize(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (quantized tensor, step-size tensor matching x shape broadcast)."""
         raise NotImplementedError
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not getattr(self, "enabled", True):
+            return x  # FP warmup: pass-through
         xq, _ = self.quantize(x)
         return xq
 

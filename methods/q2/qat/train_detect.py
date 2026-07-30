@@ -164,6 +164,8 @@ def main():
     ap.add_argument("--qgb", action="store_true", help="enable Q-GBFusion")
     ap.add_argument("--qada", action="store_true", help="enable Q-ADA distillation")
     ap.add_argument("--qada-weight", type=float, default=0.01)
+    ap.add_argument("--quant-warmup-epochs", type=int, default=2,
+                    help="FP warmup epochs before fake-quant kicks in (staged QAT)")
     ap.add_argument("--nc", type=int, default=20)
     ap.add_argument("--out", default="/mnt/hdd2/qat_run/run1")
     ap.add_argument("--pretrained",
@@ -202,6 +204,13 @@ def main():
         from .pretrained import load_yolov5s_pretrained
         load_yolov5s_pretrained(model, args.pretrained)
 
+    # Staged QAT: keep quantizers OFF for the first --quant-warmup-epochs so the
+    # pretrained model adapts to VOC in FP; then enable fake-quant. Training
+    # quantizers from step 0 with a high LR destroys the pretrained features.
+    if args.quant and args.quant_warmup_epochs > 0:
+        model.enable_quant(False)
+        print(f"[staged-QAT] quant OFF for epochs 0..{args.quant_warmup_epochs-1}, ON afterwards", flush=True)
+
     # Official YOLOv5 loss (reused, not reimplemented)
     from yolov5.utils.loss import ComputeLoss
     compute_loss = ComputeLoss(model.det, autobalance=False)
@@ -234,6 +243,9 @@ def main():
 
     scaler = torch.amp.GradScaler("cuda") if (args.amp and torch.cuda.is_available()) else None
     for epoch in range(args.epochs):
+        if args.quant and args.quant_warmup_epochs > 0 and epoch == args.quant_warmup_epochs:
+            print(f"[staged-QAT] enabling fake-quant at epoch {epoch}", flush=True)
+            model.enable_quant(True)
         r = train_one_epoch(model, train_loader, optimizer, scheduler,
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,

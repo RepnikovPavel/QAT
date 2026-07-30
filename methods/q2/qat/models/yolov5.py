@@ -206,6 +206,17 @@ class QYOLOv5(nn.Module):
             energies[idx] = fuser.update_dual()
         return energies
 
+    def enable_quant(self, flag: bool = True) -> None:
+        """Toggle fake-quantization on/off across all injected quantizers.
+
+        Used for FP warmup before QAT: keep quantizers disabled for the first
+        N epochs so the pretrained model adapts to VOC, then enable.
+        """
+        from ..quantizers.base import QuantizerBase
+        for m in self.modules():
+            if isinstance(m, QuantizerBase):
+                m.enable(flag)
+
     @torch.no_grad()
     def init_quantizers(self, img_size: int = 640) -> None:
         """Run a dummy forward to initialise lazy quantizer parameters.
