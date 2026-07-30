@@ -205,9 +205,15 @@ def main():
         load_yolov5s_pretrained(model, args.pretrained)
 
     # Staged QAT: keep quantizers OFF for the first --quant-warmup-epochs so the
-    # pretrained model adapts to VOC in FP; then enable fake-quant. Training
+    # pretrained model adapts to VOC; then enable fake-quant. Training
     # quantizers from step 0 with a high LR destroys the pretrained features.
     if args.quant and args.quant_warmup_epochs > 0:
+        # Force lazy quantizer params (per-channel step) to materialise NOW, on a
+        # dummy FP input, so the memory cost is paid before training and the
+        # first quantized forward at ep[warmup] does not OOM mid-epoch. We toggle
+        # enabled=True for one forward, then disable for the warmup phase.
+        model.enable_quant(True)
+        model.init_quantizers(args.img_size)
         model.enable_quant(False)
         print(f"[staged-QAT] quant OFF for epochs 0..{args.quant_warmup_epochs-1}, ON afterwards", flush=True)
 
