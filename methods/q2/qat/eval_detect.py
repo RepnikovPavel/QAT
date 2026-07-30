@@ -120,18 +120,26 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
 
     # p/r at the operating point = value at the F1-optimal confidence threshold
     # (column where f1 is max). Use per-class best f1's conf column, averaged.
-    f1_arr = np.asarray(f1)  # (nc, 1000)
+    f1_arr = np.asarray(f1)  # (nc, 1000) but may be (1000,) if single class
     p_arr = np.asarray(p)
     r_arr = np.asarray(r)
-    if f1_arr.size:
+    if f1_arr.ndim == 1:
+        f1_arr = f1_arr[None, :]
+        p_arr = p_arr[None, :]
+        r_arr = r_arr[None, :]
+    if f1_arr.size and f1_arr.shape[1]:
         best = f1_arr.argmax(axis=1)  # (nc,)
         precision = float(np.mean([p_arr[i, best[i]] for i in range(p_arr.shape[0])]))
         recall = float(np.mean([r_arr[i, best[i]] for i in range(r_arr.shape[0])]))
     else:
         precision = recall = 0.0
 
+    ap_arr = np.asarray(ap)
+    if ap_arr.ndim == 1:
+        ap_arr = ap_arr[None, :]
+    map50 = float(ap_arr[:, 0].mean()) if ap_arr.size else 0.0
     return {
-        "mAP@0.5": float(np.asarray(ap)[:, 0].mean()) if ap.shape[0] else 0.0,
+        "mAP@0.5": map50,
         "mAP@0.5:0.95": _m(ap),
         "precision": precision,
         "recall": recall,
