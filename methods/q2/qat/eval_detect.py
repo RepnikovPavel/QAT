@@ -109,6 +109,9 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
     tcls = torch.cat([s[3] for s in stats])
     if tcls.numel() == 0:
         return {"mAP@0.5": 0.0, "n_images": seen}
+    # ap_per_class expects tp of shape (n_pred, n_iou); ensure 2-D.
+    if tp.ndim == 1:
+        tp = tp.view(-1, 1)
     # ap_per_class returns: tp, fp, p, r, f1, ap, unique_classes
     # where p/r/f1 have shape (nc, 1000) (per-conf-threshold) and ap has (nc, 10)
     # for IoU 0.5..0.95. mAP@0.5 = ap[:, 0].mean().
