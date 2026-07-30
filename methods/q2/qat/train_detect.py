@@ -387,8 +387,13 @@ def main():
         model._compiled = True
 
     # With gradient accumulation the scheduler advances once per EFFECTIVE
-    # batch (every grad_accum iters), so steps_per_epoch is iters/accum.
-    steps_per_epoch = max(len(train_loader) // max(args.grad_accum, 1), 1)
+    # batch: every grad_accum iters, PLUS a trailing step on the last iter of
+    # the epoch if len(loader) is not a multiple of accum. So steps_per_epoch is
+    # ceil(len/accum), not floor (floor caused an off-by-one that stepped the
+    # OneCycleLR past its total on the final epoch).
+    import math as _math
+    ga = max(args.grad_accum, 1)
+    steps_per_epoch = max(_math.ceil(len(train_loader) / ga), 1)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=args.lr, epochs=args.epochs, steps_per_epoch=steps_per_epoch,
         final_div_factor=1.0 / args.final_ratio, pct_start=0.1,
