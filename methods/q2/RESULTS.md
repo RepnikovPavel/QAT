@@ -135,3 +135,23 @@ gap is a training-recipe task, not a quantization-correctness task.
 Same 75 steps for both; the FP gap is expected for such a short run and
 closes as the cold Detect head adapts. The point is mAP > 0 — the pre-fix
 collapse gave a hard 0.
+
+## Cross-check: official ultralytics/yolov5 on the same VOC split
+
+To localise the FP gap (our `train_detect` FP plateaued at mAP@0.5 ≈ 0.50 while
+loss kept dropping), we ran the **official** `python -m yolov5.train` on the
+identical VOC 07+12 split, from the same `yolov5s.pt` COCO body, 30 epochs:
+
+| epoch (official) | mAP50 | mAP50-95 |
+| --- | --- | --- |
+| 0 | 0.660 | 0.346 |
+| 1 | 0.748 | 0.433 |
+
+Diagnosis: the official pipeline reaches **0.66 in ONE epoch** vs our custom
+`train_detect` plateau of ~0.50. The difference is the recipe, not the
+quantizer: official uses `mosaic=1.0`, `lr0=0.01` with a 3-epoch warmup, and
+standard YOLOv5 val; our `VOCDataset` has `mosaic=False` and our loop uses the
+paper's QAT `lr=0.00334` even for the FP baseline. → The faithful path to 85.9%
+is to train the FP-VOC teacher with the **official** recipe, then start Q² QAT
+from that checkpoint (`--init-ckpt`). Work in progress.
+
