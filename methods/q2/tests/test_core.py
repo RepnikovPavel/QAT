@@ -187,14 +187,23 @@ def test_qada_zero_when_identical():
 def test_qada_positive_when_distorted():
     # Feature with a clear saliency peak (a bright region) so the attention
     # distribution is *non-uniform* spatially; distortion should then move the
-    # student distribution away from the teacher -> measurable JS divergence.
+    # student distribution away from the teacher -> a positive JS divergence.
+    #
+    # NOTE: with the paper's exact Eq.16 form (A~ = Sigmoid(S), then L1-normalise)
+    # a strongly salient region saturates Sigmoid -> the teacher/student
+    # distributions both concentrate on the same block and the JS is small but
+    # strictly positive. We assert positivity (>0) and rely on
+    # test_qada_monotone_in_distortion for the "more distortion -> more loss"
+    # ordering. The previous >0.01 threshold matched the softmax(S) form, which
+    # we changed to follow the paper verbatim (see qada.py / SPEC_AUDIT.md #5).
+    torch.manual_seed(0)
     x = torch.randn(2, 8, 12, 12) * 0.1
     x[:, :, 4:8, 4:8] += 5.0  # salient block
     xb = x.clone()
     xb[:, :, 4:8, 4:8] *= 0.3  # quantization suppresses the salient region
     xb += torch.randn_like(xb) * 0.05
     loss = QADALoss()(x, xb, step=torch.tensor(0.5))
-    assert loss.item() > 0.01
+    assert loss.item() > 0.0
 
 
 def test_qada_monotone_in_distortion():

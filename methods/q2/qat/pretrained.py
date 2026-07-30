@@ -55,6 +55,39 @@ def load_yolov5s_pretrained(qyolo, ckpt_path: str, strict: bool = False,
     return {"transferred": transferred, "total": len(dst_sd), "skipped": skipped}
 
 
+def load_qyolo_state_dict(qyolo, ckpt_path: str, verbose: bool = True) -> dict:
+    """Load a previously-trained QYOLOv5 checkpoint (our own format) into ``qyolo``.
+
+    Unlike ``load_yolov5s_pretrained`` (which reads an official COCO yolov5s.pt
+    DetectionModel and must skip the nc=80 head), this loads a checkpoint saved
+    by our own ``train_detect`` (``{"model": qyolo.state_dict(), ...}``). Such a
+    checkpoint already has a VOC (nc=20) Detect head, so it transfers the head
+    too — this is the "initialized from full-precision pretrained checkpoint"
+    step of Q^2 Appendix 8.1, applied to a VOC-FP checkpoint.
+
+    Quantizer parameters that exist in the target but not the source (e.g. when
+    the source was trained FP) are left at their fresh init.
+    """
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    src_sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
+    if hasattr(src_sd, "state_dict"):
+        src_sd = src_sd.state_dict()
+    dst_sd = qyolo.state_dict()
+    transferred = 0
+    new_sd = {}
+    for k, v in dst_sd.items():
+        if k in src_sd and src_sd[k].shape == v.shape:
+            new_sd[k] = src_sd[k]
+            transferred += 1
+        else:
+            new_sd[k] = v
+    qyolo.load_state_dict(new_sd, strict=False)
+    if verbose:
+        print(f"[init-ckpt] transferred {transferred}/{len(dst_sd)} tensors "
+              f"(incl. Detect head when shapes match)", flush=True)
+    return {"transferred": transferred, "total": len(dst_sd)}
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()

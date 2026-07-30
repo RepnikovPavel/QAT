@@ -20,7 +20,8 @@ probability distributions and aligned via Jensen-Shannon divergence::
 
     L_ADA = JS( P_teacher || R_student )                 (Eq. 16)
 
-with ``P = softmax(A~_t)`` over spatial positions, ``R = softmax(A~_s)``.
+with ``P = A~_t / sum A~_t`` over spatial positions (A~ = Sigmoid(S)),
+``R = A~_s / sum A~_s`` — following Eq. 16 (paper line 215) verbatim.
 
 Default loss weight: 0.01 (Appendix 8).
 """
@@ -101,6 +102,19 @@ def _spatial_softmax(attn: torch.Tensor) -> torch.Tensor:
     return F.softmax(flat, dim=2).view_as(attn)
 
 
+def _spatial_normalize(attn: torch.Tensor) -> torch.Tensor:
+    """Normalise an attention weight to a spatial prob. distribution (Eq. 16).
+
+    The paper (Sec. 3.3, line 215) builds the alignment distribution as
+    ``P_{c,ij} = A~_{c,ij} / sum_{i',j'} A~_{c,i'j'}`` with
+    ``A~ = Sigmoid(S)`` — i.e. L1-normalise the sigmoid attention map, NOT a
+    softmax over the raw score. We follow the paper verbatim here.
+    """
+    flat = attn.flatten(start_dim=2)  # (N, C, HW)
+    z = flat.sum(dim=2, keepdim=True).clamp_min(1e-12)
+    return (flat / z).view_as(attn)
+
+
 def js_divergence(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
     """Jensen-Shannon divergence between two spatial prob. distributions.
 
@@ -152,18 +166,17 @@ class QADALoss(nn.Module):
             step: per-channel quantization step ``s_c`` (Eq. 14). May be None.
             temp: sigmoid temperature for the attention map.
         """
-        # Build spatial attention *distributions* by softmax over the raw
-        # saliency score S (Eq.15). Sigmoid(A) (Eq. before) is the attention
-        # *weight*, but the distribution-alignment in Eq.16 operates on a
-        # probability distribution, which softmax(S) provides sharply and
-        # stably (sigmoid saturates and yields near-uniform distributions).
+        # Eq. 16 (paper line 215): the attention weight is A~ = Sigmoid(S),
+        # then normalised to a spatial probability distribution
+        # P_{c,ij} = A~_{c,ij} / sum A~_{c,i'j'}. We follow the paper verbatim
+        # (L1-normalise the sigmoid map, not a softmax over the raw score).
         S_t = raw_saliency(x_teacher.detach(), x_teacher.detach(), step, self.gamma, self.k)
         S_s = raw_saliency(x_teacher.detach(), xb_student, step, self.gamma, self.k)
         t = self.temp if temp is None else temp
-        S_t = S_t / max(t, 1e-6)
-        S_s = S_s / max(t, 1e-6)
-        P = _spatial_softmax(S_t)
-        R = _spatial_softmax(S_s)
+        A_t = torch.sigmoid(S_t / max(t, 1e-6))
+        A_s = torch.sigmoid(S_s / max(t, 1e-6))
+        P = _spatial_normalize(A_t)
+        R = _spatial_normalize(A_s)
         if self.divergence == "kl":
             return kl_divergence(P, R)
         return js_divergence(P, R)

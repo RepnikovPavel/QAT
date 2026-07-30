@@ -101,21 +101,39 @@ def project_quant_steps(model) -> None:
 
 def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                     qada_loss, device, epoch, qada_weight, img_size=640,
-                    log_every=50, qada_targets=None, use_amp=False,
-                    scaler=None, clip_grad=0.0, monitor_obj=True):
+                    log_every=50, qada_teacher=None, use_amp=False,
+                    scaler=None, clip_grad=0.0, monitor_obj=True, grad_accum=1):
     model.train()
     t0 = time.time()
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
     nb = 0
 
-    for it, (imgs, targets) in enumerate(loader):
+    # Q-ADA feature-supervision: capture the backbone SPPF output (layer 9 of
+    # yolov5s) from the student and the frozen FP teacher at the same point,
+    # then align their saliency distributions (paper Sec. 3.3, Eq. 13-16).
+    student_feats, teacher_feats = {}, {}
+
+    def _make_hook(store, key):
+        def hook(_mod, _inp, out):
+            store[key] = out
+        return hook
+
+    handles = []
+    if qada_loss is not None and qada_teacher is not None:
+        # SPPF is layer index 9 in yolov5s (last backbone stage before the neck).
+        handles.append(model.model[9].register_forward_hook(_make_hook(student_feats, "sppf")))
+        handles.append(qada_teacher.model[9].register_forward_hook(_make_hook(teacher_feats, "sppf")))
+
+    try:
+      for it, (imgs, targets) in enumerate(loader):
         imgs = imgs.to(device, non_blocking=True)
         tg = targets_to_yolo(targets, img_size).to(device)
 
-        # Forward: teacher (FP, no grad) for Q-ADA + student (quantized)
-        if qada_loss is not None and qada_targets is not None:
+        # Teacher FP pass (no grad) to emit supervision features.
+        if qada_loss is not None and qada_teacher is not None:
             with torch.no_grad():
-                _ = model.det.eval()  # not used; teacher handled separately
+                _ = qada_teacher(imgs)
+
         if use_amp:
             with torch.amp.autocast("cuda", dtype=torch.float16):
                 preds = model(imgs)
@@ -126,43 +144,48 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
             loss, items = compute_loss(preds, tg)
             total = loss
 
-        # Q-ADA: align teacher/student feature distributions at the concat
-        # inputs. We hook the model's last backbone feature as a proxy
-        # supervision location (full per-node Q-ADA is wired via the fusers).
+        # Q-ADA: align the student's quantized feature against the frozen FP
+        # teacher at the shared SPPF supervision point (Eq. 13-16).
         qada_val = 0.0
-        if qada_loss is not None and qada_targets is not None:
-            # qada_targets holds teacher features captured by forward hooks
-            # during a no-grad FP pass; here we add the Q-ADA term using the
-            # student's own quantized features vs the stored teacher ones.
-            for (xt, xs) in qada_targets.get_pairs():
-                total = total + qada_weight * qada_loss(xt, xs)
-                qada_val += 1
+        if qada_loss is not None and qada_teacher is not None and "sppf" in student_feats:
+            xt = teacher_feats["sppf"]            # FP teacher feature (detached)
+            xs = student_feats["sppf"]            # quantized student feature
+            total = total + qada_weight * qada_loss(xt, xs)
+            qada_val = float(qada_loss(xt, xs).detach())
 
-        optimizer.zero_grad()
+        # Gradient accumulation: scale the loss so the accumulated gradient
+        # matches a single step at the effective (batch*accum) batch size.
+        is_accum_step = ((it + 1) % grad_accum == 0) or (it + 1 == len(loader))
+        if is_accum_step:
+            optimizer.zero_grad()
+        scaled_total = total / grad_accum
         if use_amp and scaler is not None:
-            scaler.scale(total).backward()
+            scaler.scale(scaled_total).backward()
         else:
-            total.backward()
+            scaled_total.backward()
 
-        # Q-GBFusion closed-loop dual update (Eq. 8-10)
-        if model.qgb_nodes:
-            energies = model.step_qgb()
+        # Only step the optimizer / scheduler at the end of an accumulation
+        # window, so the OneCycleLR advances once per effective batch.
+        if is_accum_step:
+            # Q-GBFusion closed-loop dual update (Eq. 8-10)
+            if model.qgb_nodes:
+                energies = model.step_qgb()
 
-        # Gradient clipping (safety net against the large first-step under
-        # quantization that previously collapsed the objectness head, issue #4).
-        if clip_grad and clip_grad > 0:
+            # Gradient clipping (safety net against the large first-step under
+            # quantization that previously collapsed the objectness head, #4).
+            if clip_grad and clip_grad > 0:
+                if use_amp and scaler is not None:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
             if use_amp and scaler is not None:
-                scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
-
-        if use_amp and scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
-        # Keep LSQ step sizes strictly positive (see project_quant_steps).
-        project_quant_steps(model)
-        scheduler.step()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            # Keep LSQ step sizes strictly positive (see project_quant_steps).
+            project_quant_steps(model)
+            scheduler.step()
 
         running["loss"] += float(loss.detach())
         box, obj, cls = items
@@ -200,6 +223,9 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                   f"obj={float(obj):.3f} cls={float(cls):.3f} "
                   f"lr={optimizer.param_groups[0]['lr']:.5f}{objtag} "
                   f"({(time.time()-t0)/(it+1):.2f}s/it)", flush=True)
+    finally:
+        for h in handles:
+            h.remove()
 
     n = max(nb, 1)
     for k in running:
@@ -235,8 +261,15 @@ def main():
     ap.add_argument("--pretrained",
                     default="/mnt/hdd2/qat_run/weights/yolov5s.pt",
                     help="path to yolov5s.pt (COCO-pretrained body weights)")
+    ap.add_argument("--init-ckpt", default=None,
+                    help="a VOC-FP QYOLOv5 checkpoint to init QAT from (the paper's "
+                         "'full-precision pretrained checkpoint'). Takes priority "
+                         "over --pretrained and transfers the (warm) Detect head too.")
     ap.add_argument("--limit", type=int, default=0, help="limit train batches (debug)")
     ap.add_argument("--log-every", type=int, default=50, help="print every N iters")
+    ap.add_argument("--grad-accum", type=int, default=1,
+                    help="gradient accumulation steps; effective batch = --batch * this "
+                         "(paper uses batch 64; on 1 GPU set --batch 32 --grad-accum 2)")
     ap.add_argument("--compile", action="store_true",
                     help="torch.compile the detection forward (Blackwell speedup)")
     ap.add_argument("--amp", action="store_true",
@@ -273,7 +306,15 @@ def main():
     model = QYOLOv5(nc=args.nc, quant=args.quant, wbits=args.wbits, abits=args.abits,
                     use_qgb=args.qgb).to(device)
 
-    if args.pretrained and os.path.exists(args.pretrained):
+    # Weight init priority (Q^2 Appendix 8.1 "initialized from full-precision
+    # pretrained checkpoint"):
+    #   1. --init-ckpt : a VOC-FP QYOLOv5 checkpoint (warm head) — the faithful
+    #      reading of the paper; transfers the Detect head too.
+    #   2. --pretrained : official COCO yolov5s.pt (body only; head stays cold).
+    if args.init_ckpt and os.path.exists(args.init_ckpt):
+        from .pretrained import load_qyolo_state_dict
+        load_qyolo_state_dict(model, args.init_ckpt)
+    elif args.pretrained and os.path.exists(args.pretrained):
         from .pretrained import load_yolov5s_pretrained
         load_yolov5s_pretrained(model, args.pretrained)
 
@@ -308,10 +349,32 @@ def main():
     compute_loss = ComputeLoss(model.det, autobalance=False)
 
     qada_loss = None
-    qada_targets = None
+    qada_teacher = None
     if args.qada:
+        # Q-ADA teacher: a FROZEN full-precision model used only to emit
+        # supervision signals (paper Sec. 4.5, line 291: "a frozen pretrained
+        # full-precision model, which does not participate in quantized
+        # parameter updates"). We build it from the same pretrained weights as
+        # the student but without any quantization, then supervise the student
+        # at shared feature-supervision points (the backbone SPPF output, the
+        # last feature before the neck, is a stable single-point proxy for the
+        # per-fusion-node Q-ADA described in Sec. 3.3).
         from .qada import QADALoss
         qada_loss = QADALoss(divergence="js")
+        qada_teacher = QYOLOv5(nc=args.nc, quant=None, wbits=args.wbits,
+                               abits=args.abits, use_qgb=False).to(device)
+        # Teacher uses the SAME warm init as the student so it is a true FP-VOC
+        # teacher (paper: "frozen pretrained full-precision model").
+        if args.init_ckpt and os.path.exists(args.init_ckpt):
+            from .pretrained import load_qyolo_state_dict
+            load_qyolo_state_dict(qada_teacher, args.init_ckpt, verbose=False)
+        elif args.pretrained and os.path.exists(args.pretrained):
+            from .pretrained import load_yolov5s_pretrained
+            load_yolov5s_pretrained(qada_teacher, args.pretrained, verbose=False)
+        qada_teacher.eval()
+        for p in qada_teacher.parameters():
+            p.requires_grad_(False)
+        print("[qada] frozen FP teacher built (parameter-free supervision)", flush=True)
 
     optimizer = build_optimizer(model, args.lr, args.momentum, args.weight_decay)
 
@@ -323,7 +386,9 @@ def main():
         model.det.model = torch.compile(model.det.model, mode="reduce-overhead")
         model._compiled = True
 
-    steps_per_epoch = len(train_loader)
+    # With gradient accumulation the scheduler advances once per EFFECTIVE
+    # batch (every grad_accum iters), so steps_per_epoch is iters/accum.
+    steps_per_epoch = max(len(train_loader) // max(args.grad_accum, 1), 1)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=args.lr, epochs=args.epochs, steps_per_epoch=steps_per_epoch,
         final_div_factor=1.0 / args.final_ratio, pct_start=0.1,
@@ -338,9 +403,9 @@ def main():
         r = train_one_epoch(model, train_loader, optimizer, scheduler,
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,
-                            qada_targets=qada_targets, use_amp=args.amp,
+                            qada_teacher=qada_teacher, use_amp=args.amp,
                             scaler=scaler, clip_grad=args.clip_grad,
-                            log_every=args.log_every)
+                            log_every=args.log_every, grad_accum=args.grad_accum)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)
