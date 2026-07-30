@@ -227,6 +227,7 @@ def main():
                     default="/mnt/hdd2/qat_run/weights/yolov5s.pt",
                     help="path to yolov5s.pt (COCO-pretrained body weights)")
     ap.add_argument("--limit", type=int, default=0, help="limit train batches (debug)")
+    ap.add_argument("--log-every", type=int, default=50, help="print every N iters")
     ap.add_argument("--compile", action="store_true",
                     help="torch.compile the detection forward (Blackwell speedup)")
     ap.add_argument("--amp", action="store_true",
@@ -321,7 +322,8 @@ def main():
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,
                             qada_targets=qada_targets, use_amp=args.amp,
-                            scaler=scaler, clip_grad=args.clip_grad)
+                            scaler=scaler, clip_grad=args.clip_grad,
+                            log_every=args.log_every)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)
