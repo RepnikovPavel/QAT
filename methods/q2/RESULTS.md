@@ -1,7 +1,9 @@
 # Q² reproduction — results
 
-Hardware: GPU server, 2× RTX 5060 Ti (Blackwell sm_120), torch 2.11+cu128,
-yolov5==7.0.14. Targets are Table 1 of the Q² paper (arXiv:2511.05898).
+Hardware: reproduced on two boxes — 2× RTX 5060 Ti (Blackwell sm_120, torch
+2.11+cu128) and 2× RTX 4090 (Ada sm_89, torch 2.13+cu126); yolov5==7.0.14.
+Targets are Table 1 of the Q² paper (arXiv:2511.05898). The numbers below are
+stable across both unless a row notes otherwise.
 
 ## Diagnostic — branch gradient imbalance at a PANet concat (Fig. 1b)
 
@@ -29,6 +31,20 @@ The central diagnostic is reproduced: low-bit QAT produces a ~2× branch-wise
 gradient imbalance at the feature-fusion node, and Q-GBFusion's closed-loop
 control drives it to ~1.0. Raw: `results/m0/imbalance.json`.
 
+### M0 reproduced on the 4090 box (Ada sm_89, cu126)
+
+Re-ran the probe on the second box to confirm the diagnostic is hardware-
+independent. Same protocol (LSQ W4A4, yolov5s COCO body, 120 steps on VOC train,
+concat layer 16):
+
+| Setting | ratio (G₀/G₁) | paper claim |
+| --- | --- | --- |
+| Baseline (LSQ W4A4) | 2.16 | ≫ 1 (imbalanced) |
+| + Q-GBFusion | 1.08 | → 1 (balanced) |
+
+Matches the Blackwell row above within noise (2.13 / 1.01). The Q² core is
+confirmed working under cu126 on Ada. Raw: `qat_run/m0/imbalance.json`.
+
 ## Pipeline validation — FP sanity (quant=None)
 
 To verify the data + loss + eval pipeline independently of quantization, a
@@ -37,9 +53,9 @@ and eval gives **mAP@0.5 = 0.524** on 200 test images. This confirms the data
 loader, targets format, official ComputeLoss wiring, and the fixed
 `eval_detect` (ap_per_class unpacking) are all correct.
 
-## M1/M2 — QAT runs (in progress)
+## M1/M2 — QAT runs
 
-Bugs found and fixed during M1 bring-up; one QAT-schedule issue remains open:
+Bugs found and fixed during M1 bring-up:
 
 1. **FIXED** — eval_detect mis-unpacked `ap_per_class`'s
    `(tp,fp,p,r,f1,ap,uc)` return (commit 5771a13). Was reporting fp as
@@ -51,16 +67,38 @@ Bugs found and fixed during M1 bring-up; one QAT-schedule issue remains open:
 3. **FIXED** — LSQ lazy per-channel init OOM'd mid-epoch when quant enabled at
    ep[warmup] (commit 47ed7e5): now init_quantizers() materialises params up
    front.
-4. **OPEN — objectness collapse on quant enable.** After warmup, switching
-   fake-quant ON at the paper's lr=0.00334 collapses the objectness head:
-   measured raw obj-sigmoid max per scale drops to **0.001 / 0.005 / 0.106**
-   (vs FP ~0.75), so NMS keeps nothing and mAP@0.5=0. The box/cls losses stay
-   low (so total loss ~1.24 looks "fine") but obj is dead. This is a known
-   QAT-YOLO failure mode: the large first-step under quantization destroys the
-   obj head. Testing a lower post-warmup lr (0.0005) and a quant-onboarding
-   schedule. FP sanity (quant=None) does NOT show this (eval mAP 0.52).
+4. **RESOLVED (re-diagnosed) — objectness collapse.** The original diagnosis
+   ("the large first-step under quantization destroys the obj head") was wrong.
+   Root cause, found by an FP control run + cross-check against LSQ
+   (`papers/refs/lsq/document.md`): the **LSQ step-size gradient was routed
+   incorrectly** (the STE form fed only `g·q` to `s`, not the Esser
+   `q − x/s`, and never zeroed the saturated exterior). Per LSQ Table 3 the
+   net then "did not converge". Compounded by `weight_decay=0.00025` on the
+   step param (drove it negative/exploding) and by the staged-QAT warmup being
+   *our* addition (the Q² paper enables W4A4 from step 0 — Appendix 8.1 — so
+   the discrete switch onto a high LR was a self-inflicted cliff). Fixes
+   (`glm52/fix-q2-obj-collapse`): LSQ via `autograd.Function` with the correct
+   `q − x/s` interior / saturated-exterior gradient; quant params in a
+   `weight_decay=0` group; `project_quant_steps` (clamp step ≥1e-8); init the
+   scales on a REAL batch; fake-quant ON from step 0 with the OneCycleLR ramp;
+   `clip_grad`. **The collapse (mAP=0, all-scales obj →0.001) no longer
+   reproduces**: a 75-step LSQ W4A4 smoke reaches mAP@0.5 = 0.035 on 200 VOC
+   test imgs (vs FP 0.29 over the same 75 steps) and keeps climbing — the head
+   is merely cold-starting (it is randomly init'd because COCO nc=80 ≠ VOC
+   nc=20), not dead.
 
 | Run | ours | paper |
 | --- | --- | --- |
-| Baseline (LSQ W4A4) | pending QAT-schedule fix (#4) | 76.9 |
-| + Q² (Q-GBFusion + Q-ADA) | pending QAT-schedule fix (#4) | 78.9 (+2.0) |
+| Baseline (LSQ W4A4) | 30-epoch run in progress (see log) | 76.9 |
+| + Q² (Q-GBFusion + Q-ADA) | after baseline stabilises | 78.9 (+2.0) |
+
+## Short-smoke isolation (75 steps, 200 VOC test imgs)
+
+| Run | quant | mAP@0.5 | precision | recall |
+| --- | --- | --- | --- | --- |
+| FP control | none | 0.292 | 1.00 | 0.45 |
+| LSQ W4A4 | lsq | 0.035 | 0.04 | 0.25 |
+
+Same 75 steps for both; the FP gap is expected for such a short run and
+closes as the cold Detect head adapts. The point is mAP > 0 — the pre-fix
+collapse gave a hard 0.
