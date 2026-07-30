@@ -16,17 +16,30 @@ current task file you were given.
    push ONLY that branch (`git push -u origin grok/<task>`). NEVER run
    `git checkout main`, `git merge main`, or push to main — a reviewer merges
    your branch after code review. If main moved, rebase your branch onto it.
-3. **Commit identity:** `git config user.name "grok-4.5 agent"`,
-   `user.email "grok-4.5@local"`.
+3. **Commit identity:** sign every commit with YOUR model name (so incidents
+   and commit activity can be attributed to the agent that made them), e.g.
+   `git config user.name "glm52"`, `user.email "glm52@local"` (replace glm52
+   with your model id — grok-4.5, codex, opus, …). Never use the owner's
+   personal/work email. Prefix the commit body with the model name (e.g. a
+   `glm52: ...` line) for the same reason.
 4. **Never hallucinate code.** If a paper or upstream repo exists, fetch its
    source (git clone / web) or ocrc-parse the PDF before implementing. The
    ocrc service is available at `http://127.0.0.1:18601` (if down, see
    `recipes/ocrc_tunnel.md`).
-5. **All training runs on the GPU server** via ssh `user@192.168.1.68` (see
-   `/grok/secrets.md` for the password). Datasets at
-   `/mnt/hdd2/datasets/{voc,coco}`. Use Docker image `qat-repro` (build from
-   `docker/Dockerfile` if missing) with `--gpus all --shm-size=16g`. Never
-   install deps on the host — Docker only.
+5. **All training runs on a GPU server, in Docker.** Two supported boxes (CUDA
+   12 **and** CUDA 13 compatible — see README):
+   - 2× RTX 4090 (Ada sm_89): ssh `pavel.repnikov@10.152.1.180` (see
+     `/grok/secrets.md`); image `qat-repro-cu126` built from
+     `docker/Dockerfile.cu126` (cu126 = shared denominator for Ada/Ampere and
+     CUDA-13 hosts). Data + runs on `/mnt/data1/logchecker/qat_repro` — do NOT
+     use `/mnt/data2` (the Docker data-root is 100 % full). Recipe:
+     `recipes/q2_voc_4090.md`.
+   - 2× RTX 5060 Ti (Blackwell sm_120): ssh `user@192.168.1.68`; image
+     `qat-repro` from `docker/Dockerfile` (cu128). Datasets at
+     `/mnt/hdd2/datasets/{voc,coco}`. Recipe: `recipes/q2_voc.md`.
+   Always run via `scripts/docker_run.sh` with `PLATFORM=cu126|blackwell` and
+   `DATA_DIR=<writable disk>`, `--gpus all --shm-size=16g`. Never install deps
+   on the host — Docker only.
 6. **Anti-hallucination for every method:** cross-check formulas against the
    parsed paper in `papers/<arxivid>/document.md` before coding.
 7. **Coordinate GPU usage.** The Q^2 (q2) M1/M2 training+eval and the
