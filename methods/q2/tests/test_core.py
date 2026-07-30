@@ -44,6 +44,92 @@ def test_lsq_step_reduces_error():
     assert errs[8] < errs[4] < errs[2]
 
 
+def test_lsq_forward_matches_canonical_formula():
+    """LSQ forward must equal s * clip(round(x/s), Qn, Qp) exactly (match test).
+
+    Guards against any drift between the autograd.Function forward and the
+    paper's definition (Esser 2020, Eq. 1) — bit-exact on a fixed seed.
+    """
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)
+    x = torch.randn(2, 8, 6, 6) * 3
+    with torch.no_grad():
+        q.step.fill_(0.1)          # fixed positive step
+        q._initialised.fill_(True)
+    xq, s = q.quantize(x)
+    # canonical reference computed directly from the formula
+    v = x / s.clamp(min=1e-12)
+    ref = v.round().clamp(q.Qn, q.Qp) * s
+    assert torch.allclose(xq, ref, atol=1e-6)
+
+
+def test_lsq_step_grad_matches_esser_formula():
+    """The step-size gradient must be the Esser d xq/d s = q - x/s (interior).
+
+    Check it numerically against autograd at an interior point (x/s strictly
+    inside [Qn, Qp]), where the analytic formula is exact (no saturation).
+    """
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)   # Qn=-8, Qp=7
+    # craft x so every element is interior at the chosen step
+    s0 = 0.05
+    x = (torch.rand(100) * 12 - 6) * s0   # x/s in [-6, 6] ⊂ (-8, 7)
+    with torch.no_grad():
+        q.step.fill_(s0)
+        q._initialised.fill_(True)
+    xq, s = q.quantize(x)
+    xq.sum().backward()
+    # analytic: d xq/d s summed over all elements = sum(q - x/s), times g
+    import math
+    g = 1.0 / math.sqrt(q.Qp * x.numel())
+    v = x / s0
+    qv = v.round().clamp(q.Qn, q.Qp)
+    expected = (qv - v).sum() * g
+    assert torch.allclose(q.step.grad.sum(), expected, atol=1e-5)
+
+
+def test_lsq_step_grad_is_scaled_and_finite():
+    """Without grad_factor the step gradient would be ~sqrt(N) too large.
+
+    The Esser scale g = 1/sqrt(Qp*N) must keep the step gradient within an order
+    of magnitude of the per-element input gradient (regression for the LSQ
+    rewrite; the pre-fix formula routed only g*q to s and was ~1000x off).
+    """
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)
+    x = torch.randn(4, 16, 8, 8)
+    xq, _ = q.quantize(x)
+    xq.sum().backward()
+    gstep = q.step.grad.abs().item()
+    assert math.isfinite(gstep)
+    # a single-element loss sum gives a step grad of order g * N ~ sqrt(N/Qp);
+    # a correctly-scaled grad stays modest (the broken form exploded >1e4).
+    assert gstep < 100.0
+
+
+def test_lsq_step_stable_under_sgd():
+    """A few SGD steps must NOT explode the LSQ step (issue #4 root cause).
+
+    With weight_decay=0 on the step param-group + positivity clamp, the step
+    stays within 10x of its init. The pre-fix path could blow it up ~1000x.
+    """
+    torch.manual_seed(0)
+    q = LSQ(bit_width=4, signed=True)
+    x = torch.randn(4, 16, 8, 8)
+    q.quantize(x)                      # trigger Esser init
+    s0 = float(q.step.detach().abs())
+    opt = torch.optim.SGD([q.step], lr=0.01, momentum=0.9)
+    for _ in range(20):
+        opt.zero_grad()
+        xq, _ = q.quantize(x)
+        xq.sum().backward()
+        opt.step()
+        with torch.no_grad():
+            q.step.clamp_(min=1e-8)    # project_quant_steps
+    s1 = float(q.step.detach().abs())
+    assert s1 < 10.0 * s0
+
+
 # ---------------------------------------------------------- Q-GBFusion
 def test_qgbfusion_alpha_is_simplex():
     f = QGBFusion(num_branches=3, num_channels=8)

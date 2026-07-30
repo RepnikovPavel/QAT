@@ -62,7 +62,9 @@ class N2UQ(QuantizerBase):
         # learnable range [-L, L]. Initialised to uniform spacing.
         self.theta_logits = nn.Parameter(torch.zeros(self.num_thresh))
         self.log_range = nn.Parameter(torch.tensor(float(init_range)).log())
-        self._initialised = False
+        # Persist the init flag across state_dict so lazy init is NOT re-run
+        # after loading a trained checkpoint mid-session.
+        self.register_buffer("_initialised", torch.tensor(False), persistent=True)
 
     # ------------------------------------------------------------------ levels
     def _thresholds(self, x: torch.Tensor) -> torch.Tensor:
@@ -103,12 +105,14 @@ class N2UQ(QuantizerBase):
         is non-zero — this is the essence of G-STE.
         """
         # Adjacent interval lengths: prepend/append the outer edges (±L).
-        L = self.log_range.exp()
+        # L as a plain Python float (the edges are fixed G-STE geometry; the
+        # threshold gradient flows through `th`, not through these edges).
+        L = float(self.log_range.detach().exp())
         edges = torch.cat(
-            [torch.tensor([-float(L)] if self.signed else [0.0],
+            [torch.tensor([-L] if self.signed else [0.0],
                           device=th.device, dtype=th.dtype),
              th,
-             torch.tensor([float(L)], device=th.device, dtype=th.dtype)]
+             torch.tensor([L], device=th.device, dtype=th.dtype)]
         )  # (num_levels,)
         # interval length between consecutive edges
         intervals = edges[1:] - edges[:-1]  # (num_thresh+1,) = num_levels
@@ -133,7 +137,7 @@ class N2UQ(QuantizerBase):
         return soft
 
     def quantize(self, x: torch.Tensor):
-        if not self._initialised:
+        if not bool(self._initialised.item()):
             with torch.no_grad():
                 # N2UQ keeps a single set of input thresholds (per-tensor); for
                 # weights we use the global max-abs range to initialise L.
@@ -148,7 +152,7 @@ class N2UQ(QuantizerBase):
                 self.log_range.data = torch.tensor(
                     float(r.log()), device=x.device, dtype=x.dtype
                 )
-            self._initialised = True
+            self._initialised.fill_(True)
 
         th = self._thresholds(x)
         # STE: hard forward value, soft (G-STE) backward

@@ -61,16 +61,48 @@ def targets_to_yolo(targets, img_size=640):
 
 
 def build_optimizer(model, lr, momentum, weight_decay):
-    """SGD over weights, but quantizer step/threshold params are optimised too."""
-    params = [p for p in model.parameters() if p.requires_grad]
-    return torch.optim.SGD(params, lr=lr, momentum=momentum,
+    """SGD Nesterov with two param-groups.
+
+    Quantizer parameters (LSQ step, PACT alpha, N2UQ thresholds/range) go in a
+    separate group with weight_decay=0: applying weight decay to the LSQ step
+    drives it negative / explodes it, which collapses the objectness head
+    (issue #4). LSQ's own gradient scale ``1/sqrt(Qp*N)`` already balances its
+    update magnitude against weights (Esser 2020 Sec. 2.2).
+    """
+    quant_param_ids = {id(p) for p in model.quantizer_params() if p.requires_grad}
+    quant_params, weight_params = [], []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        (quant_params if id(p) in quant_param_ids else weight_params).append(p)
+    groups = [
+        {"params": weight_params, "weight_decay": weight_decay},
+        {"params": quant_params, "weight_decay": 0.0},
+    ]
+    return torch.optim.SGD(groups, lr=lr, momentum=momentum,
                            weight_decay=weight_decay, nesterov=True)
+
+
+@torch.no_grad()
+def project_quant_steps(model) -> None:
+    """Keep every quantizer step-size / scale strictly positive after an update.
+
+    LSQ uses ``step.clamp(min=1e-8)`` in forward/backward, so a negative or zero
+    raw parameter is masked there; but the raw value can still drift far below
+    zero (SGD + momentum), wasting capacity and making the lazily-initialised
+    value meaningless. Clamp the raw parameter in place so it stays in a sane
+    range. N2UQ/PACT have no such positivity constraint and are left alone.
+    """
+    from .quantizers.lsq import LSQ
+    for m in model.modules():
+        if isinstance(m, LSQ):
+            m.step.data.clamp_(min=1e-8)
 
 
 def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
                     qada_loss, device, epoch, qada_weight, img_size=640,
                     log_every=50, qada_targets=None, use_amp=False,
-                    scaler=None):
+                    scaler=None, clip_grad=0.0, monitor_obj=True):
     model.train()
     t0 = time.time()
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
@@ -116,11 +148,20 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
         if model.qgb_nodes:
             energies = model.step_qgb()
 
+        # Gradient clipping (safety net against the large first-step under
+        # quantization that previously collapsed the objectness head, issue #4).
+        if clip_grad and clip_grad > 0:
+            if use_amp and scaler is not None:
+                scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+
         if use_amp and scaler is not None:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
+        # Keep LSQ step sizes strictly positive (see project_quant_steps).
+        project_quant_steps(model)
         scheduler.step()
 
         running["loss"] += float(loss.detach())
@@ -132,10 +173,23 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
         nb += 1
 
         if (it % log_every) == 0:
+            # Objectness-head health probe: raw obj-sigmoid max per scale. When
+            # the head collapses (issue #4) this drops to ~0.001/0.005/0.106 vs
+            # a healthy ~0.75, so NMS keeps nothing and mAP=0. Tracking it here
+            # surfaces a collapse within a few steps instead of at eval time.
+            objtag = ""
+            if monitor_obj and isinstance(preds, (list, tuple)) and len(preds) >= 1:
+                try:
+                    p0 = preds[0].detach()
+                    # yolov5 training output: [batch, 5+nc, ...]; obj is channel 4.
+                    omax = float(p0[:, 4].sigmoid().max()) if p0.dim() == 3 else float("nan")
+                    objtag = f" omax0={omax:.3f}"
+                except Exception:
+                    pass
             print(f"[ep {epoch} it {it}/{len(loader)}] "
                   f"loss={float(loss):.3f} box={float(box):.3f} "
                   f"obj={float(obj):.3f} cls={float(cls):.3f} "
-                  f"lr={optimizer.param_groups[0]['lr']:.5f} "
+                  f"lr={optimizer.param_groups[0]['lr']:.5f}{objtag} "
                   f"({(time.time()-t0)/(it+1):.2f}s/it)", flush=True)
 
     n = max(nb, 1)
@@ -164,8 +218,9 @@ def main():
     ap.add_argument("--qgb", action="store_true", help="enable Q-GBFusion")
     ap.add_argument("--qada", action="store_true", help="enable Q-ADA distillation")
     ap.add_argument("--qada-weight", type=float, default=0.01)
-    ap.add_argument("--quant-warmup-epochs", type=int, default=2,
-                    help="FP warmup epochs before fake-quant kicks in (staged QAT)")
+    ap.add_argument("--clip-grad", type=float, default=10.0,
+                    help="max grad norm (0 disables); safety net against the "
+                         "large first-step under quantization (issue #4)")
     ap.add_argument("--nc", type=int, default=20)
     ap.add_argument("--out", default="/mnt/hdd2/qat_run/run1")
     ap.add_argument("--pretrained",
@@ -204,18 +259,31 @@ def main():
         from .pretrained import load_yolov5s_pretrained
         load_yolov5s_pretrained(model, args.pretrained)
 
-    # Staged QAT: keep quantizers OFF for the first --quant-warmup-epochs so the
-    # pretrained model adapts to VOC; then enable fake-quant. Training
-    # quantizers from step 0 with a high LR destroys the pretrained features.
-    if args.quant and args.quant_warmup_epochs > 0:
-        # Force lazy quantizer params (per-channel step) to materialise NOW, on a
-        # dummy FP input, so the memory cost is paid before training and the
-        # first quantized forward at ep[warmup] does not OOM mid-epoch. We toggle
-        # enabled=True for one forward, then disable for the warmup phase.
-        model.enable_quant(True)
-        model.init_quantizers(args.img_size)
-        model.enable_quant(False)
-        print(f"[staged-QAT] quant OFF for epochs 0..{args.quant_warmup_epochs-1}, ON afterwards", flush=True)
+    # Initialise the lazy quantizer parameters on a REAL batch, not a dummy of
+    # zeros. The Q^2 paper enables W4A4 from step 0 (no FP warmup), so the LSQ
+    # step sizes must reflect the activation distribution at the very first
+    # step; zero-input init gave nonsense scales. One real batch materialises
+    # the per-channel weight scales and per-tensor activation scales, paying
+    # the memory cost before training so the first real step does not OOM.
+    if args.quant:
+        with torch.no_grad():
+            imgs0, _ = next(iter(DataLoader(
+                train_ds, batch_size=1, shuffle=False,
+                collate_fn=collate_detection, num_workers=0)))
+            model.init_quantizers_from(imgs0.to(device), args.img_size)
+        print(f"[quant] fake-quant ON from step 0 (paper schedule); "
+              f"LSQ scales initialised on a real batch", flush=True)
+
+    # Scale the official YOLOv5 loss gains to the actual class count / image
+    # size (the package defaults are tuned for COCO 80 classes at 640px). The
+    # cls gain scales with the label space; the obj gain scales with the grid
+    # count, keeping the per-anchor objectness signal at a comparable strength.
+    box_gain = 0.05
+    cls_gain = 0.5 * (args.nc / 80.0)
+    obj_gain = 1.0 * (args.img_size / 640.0) ** 2
+    model.det.hyp["box"] = box_gain
+    model.det.hyp["cls"] = cls_gain
+    model.det.hyp["obj"] = obj_gain
 
     # Official YOLOv5 loss (reused, not reimplemented)
     from yolov5.utils.loss import ComputeLoss
@@ -249,14 +317,11 @@ def main():
 
     scaler = torch.amp.GradScaler("cuda") if (args.amp and torch.cuda.is_available()) else None
     for epoch in range(args.epochs):
-        if args.quant and args.quant_warmup_epochs > 0 and epoch == args.quant_warmup_epochs:
-            print(f"[staged-QAT] enabling fake-quant at epoch {epoch}", flush=True)
-            model.enable_quant(True)
         r = train_one_epoch(model, train_loader, optimizer, scheduler,
                             compute_loss, qada_loss, device, epoch,
                             args.qada_weight, img_size=args.img_size,
                             qada_targets=qada_targets, use_amp=args.amp,
-                            scaler=scaler)
+                            scaler=scaler, clip_grad=args.clip_grad)
         print(f"== epoch {epoch} avg: loss={r['loss']:.3f} "
               f"box={r['box']:.3f} obj={r['obj']:.3f} cls={r['cls']:.3f} "
               f"({r['time']:.0f}s)", flush=True)

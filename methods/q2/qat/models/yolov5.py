@@ -145,10 +145,6 @@ class QYOLOv5(nn.Module):
     def save(self):
         return self.det.save
 
-        # Inject quantization into Conv layers (skip head if requested).
-        self.qgb_nodes: Dict[int, QGBFusion] = {}
-        self._inject(quant, wbits, abits, quantize_head, use_qgb)
-
     # ---------------------------------------------------------- injection
     def _inject(self, quant, wbits, abits, quantize_head, use_qgb):
         if quant is None and not use_qgb:
@@ -207,15 +203,30 @@ class QYOLOv5(nn.Module):
         return energies
 
     def enable_quant(self, flag: bool = True) -> None:
-        """Toggle fake-quantization on/off across all injected quantizers.
+        """No-op kept for backward compat.
 
-        Used for FP warmup before QAT: keep quantizers disabled for the first
-        N epochs so the pretrained model adapts to VOC, then enable.
+        Fake-quant is always on (the Q^2 paper enables W4A4 from step 0). The
+        previous staged-QAT FP-warmup is removed: it was our addition, not the
+        paper's, and the discrete switch onto a high LR collapsed the
+        objectness head (issue #4).
+        """
+        return
+
+    def quantizer_params(self):
+        """Yield only the quantizer parameters (step / alpha / thresholds).
+
+        Used to put them in a separate optimizer param-group with weight_decay=0
+        (weight decay on LSQ step / N2UQ thresholds drives them negative or
+        explodes them, which collapses the objectness head).
         """
         from ..quantizers.base import QuantizerBase
+        seen = set()
         for m in self.modules():
             if isinstance(m, QuantizerBase):
-                m.enable(flag)
+                for p in m.parameters(recurse=False):
+                    if id(p) not in seen:
+                        seen.add(id(p))
+                        yield p
 
     @torch.no_grad()
     def init_quantizers(self, img_size: int = 640) -> None:
@@ -225,13 +236,28 @@ class QYOLOv5(nn.Module):
         first real input. A freshly-built model has scalar placeholders, so
         loading a trained checkpoint (with per-channel params) would size-
         mismatch. Call this once before load_state_dict on a fresh model.
+
+        Uses a zero image only to materialise shapes; prefer
+        ``init_quantizers_from`` for training, which initialises the scales on
+        a REAL batch (zero-input init gave nonsense LSQ scales).
+        """
+        self.init_quantizers_from(torch.zeros(1, 3, img_size, img_size))
+
+    @torch.no_grad()
+    def init_quantizers_from(self, x: torch.Tensor) -> None:
+        """Initialise lazy quantizer parameters on a real input batch ``x``.
+
+        Forward one batch so every LSQ/N2UQ/PACT quantizer sees its layer's
+        actual activation/weight distribution and initialises the per-channel
+        step/range accordingly (Esser 2020 init on the FIRST batch, as the LSQ
+        paper prescribes for activations). Also materialises per-channel
+        parameters so a subsequent load_state_dict cannot size-mismatch.
         """
         was_training = self.training
         self.eval()
-        dummy = torch.zeros(1, 3, img_size, img_size)
         device = next(self.parameters()).device
         try:
-            self(dummy.to(device))
+            self(x.to(device))
         except Exception:
             pass
         if was_training:

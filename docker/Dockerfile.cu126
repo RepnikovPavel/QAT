@@ -24,14 +24,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# System deps + Python 3.11
+# System deps + Python 3.10 (stable). NOTE: ubuntu:22.04 ships python3.11 as a
+# release candidate (3.11.0~rc1) which lacks sys.get_int_max_str_digits and
+# breaks torch import, so we pin the stable python3.10 instead.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 python3.11-dev python3.11-venv python3-pip \
+        python3.10 python3.10-dev python3.10-venv python3-pip \
         git wget curl unzip vim ca-certificates \
         libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
-    && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python3.10 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.10 /usr/local/bin/python3 \
     && python -m pip install --upgrade pip
 
 # PyTorch with CUDA 12.6 wheels (Ada sm_89 / Ampere sm_86; also loads on a

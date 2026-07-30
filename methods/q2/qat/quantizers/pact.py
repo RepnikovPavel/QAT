@@ -40,7 +40,9 @@ class PACT(QuantizerBase):
             self.Qp = levels - 1
 
         self.alpha = nn.Parameter(torch.tensor(float(init_alpha)))
-        self._initialised = False
+        # Persist the init flag across state_dict so lazy per-channel init is
+        # NOT re-run after loading a trained checkpoint mid-session.
+        self.register_buffer("_initialised", torch.tensor(False), persistent=True)
 
     def _broadcast(self, v: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if self.per_channel:
@@ -50,13 +52,13 @@ class PACT(QuantizerBase):
         return v
 
     def quantize(self, x: torch.Tensor):
-        if self.per_channel and not self._initialised:
+        if self.per_channel and not bool(self._initialised.item()):
             nc = x.shape[self.channel_dim]
             with torch.no_grad():
                 dims = [d for d in range(x.dim()) if d != self.channel_dim]
                 a = x.abs().amax(dim=dims).clamp(min=1e-3)
                 self.alpha.data = a.detach().clone()
-            self._initialised = True
+            self._initialised.fill_(True)
 
         alpha = self.alpha.abs()
         a = self._broadcast(alpha, x)
