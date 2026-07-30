@@ -75,6 +75,16 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                 dcls = det[:, 5].long()
                 # match
                 if nl:
+                    # Sort detections by DESCENDING confidence before greedy
+                    # IoU matching (the PASCAL-VOC / YOLOv5 convention): a
+                    # higher-confidence box must get the first chance to claim a
+                    # ground-truth box, otherwise low-conf boxes steal GTs and
+                    # deflate mAP. This was missing and caused our mAP to read
+                    # ~0.32 below the official yolov5 val on the same ckpt.
+                    order = dconf.argsort(descending=True)
+                    dbox = dbox[order]
+                    dconf = dconf[order]
+                    dcls = dcls[order]
                     # tp shape (n_pred, 1) as expected by yolov5 ap_per_class
                     correct = torch.zeros((dbox.shape[0], 1), dtype=torch.float32, device=device)
                     iou = _iou_matrix(dbox, tbox)
