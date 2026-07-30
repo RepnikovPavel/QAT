@@ -271,7 +271,7 @@ def main():
             imgs0, _ = next(iter(DataLoader(
                 train_ds, batch_size=1, shuffle=False,
                 collate_fn=collate_detection, num_workers=0)))
-            model.init_quantizers_from(imgs0.to(device), args.img_size)
+            model.init_quantizers_from(imgs0.to(device))
         print(f"[quant] fake-quant ON from step 0 (paper schedule); "
               f"LSQ scales initialised on a real batch", flush=True)
 
