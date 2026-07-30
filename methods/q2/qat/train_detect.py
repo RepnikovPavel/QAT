@@ -177,13 +177,14 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
             # the head collapses (issue #4) this drops to ~0.001/0.005/0.106 vs
             # a healthy ~0.75, so NMS keeps nothing and mAP=0. Tracking it here
             # surfaces a collapse within a few steps instead of at eval time.
+            # yolov5 train output per scale: [B, na, ny, nx, 5+nc]; obj is [...,4].
             objtag = ""
             if monitor_obj and isinstance(preds, (list, tuple)) and len(preds) >= 1:
                 try:
                     p0 = preds[0].detach()
-                    # yolov5 training output: [batch, 5+nc, ...]; obj is channel 4.
-                    omax = float(p0[:, 4].sigmoid().max()) if p0.dim() == 3 else float("nan")
-                    objtag = f" omax0={omax:.3f}"
+                    if p0.dim() >= 2:
+                        omax = float(p0[..., 4].sigmoid().max())
+                        objtag = f" omax0={omax:.3f}"
                 except Exception:
                     pass
             print(f"[ep {epoch} it {it}/{len(loader)}] "
@@ -246,6 +247,14 @@ def main():
     test_list = str(Path(args.data) / "test.list")
     train_ds = VOCDataset(train_list, img_size=args.img_size, augment=True)
     test_ds = VOCDataset(test_list, img_size=args.img_size, augment=False)
+    # Optionally cap the number of training samples (debug / smoke runs). The
+    # Q^2 paper trains on the full 07+12 split (~16.5k imgs); --limit rounds
+    # down to a multiple of --batch (drop_last=True needs that).
+    if args.limit and args.limit > 0:
+        n = (args.limit // args.batch) * args.batch
+        n = max(n, args.batch)
+        train_ds = torch.utils.data.Subset(train_ds, list(range(min(n, len(train_ds)))))
+        print(f"[limit] using {len(train_ds)} train samples", flush=True)
 
     def seed_worker(_):
         np.random.seed(args.seed)
