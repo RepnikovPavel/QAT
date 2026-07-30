@@ -89,8 +89,41 @@ Bugs found and fixed during M1 bring-up:
 
 | Run | ours | paper |
 | --- | --- | --- |
-| Baseline (LSQ W4A4) | 30-epoch run in progress (see log) | 76.9 |
-| + Q² (Q-GBFusion + Q-ADA) | after baseline stabilises | 78.9 (+2.0) |
+| Baseline (LSQ W4A4, 30 ep, bs32, 1×4090) | **mAP@0.5 = 44.9** (full VOC test, 4131 img) | 76.9 |
+| + Q² (Q-GBFusion + Q-ADA) | after baseline gap is closed | 78.9 (+2.0) |
+
+### Baseline mAP trajectory (LSQ W4A4, eval on 300 VOC test img)
+
+| ckpt | mAP@0.5 | precision | recall |
+| --- | --- | --- | --- |
+| 75 steps | 0.035 | 0.04 | 0.25 |
+| ep4 | 0.39 | 0.62 | 0.73 |
+| ep6 | 0.43 | 0.83 | 0.86 |
+| ep9 | 0.44 | 0.86 | 0.81 |
+| ep29 (full test, 4131 img) | **0.449** | 0.73 | 0.70 |
+
+### Gap to the paper target (76.9) — honest accounting
+
+The collapse is fixed (mAP rises monotonically 0.035 → 0.449; the pre-fix run
+was a hard 0), but the absolute number is ~32 points below the paper. Known,
+fixable differences from the paper setup, in rough order of impact:
+
+1. **Cold-start Detect head.** COCO nc=80 ≠ VOC nc=20, so the pretrained
+   transfer skips `det.model.24.*` and the head trains from random init,
+   burning epochs just to recover. The paper's "initialized from full-precision
+   pretrained checkpoints" (Appendix 8.1) likely transfers a head too (or
+   pre-trains the head on VOC FP first). Next step: a short FP head-only warmup,
+   or transfer the head class-subset where shapes allow.
+2. **Batch 32 on 1 GPU vs paper batch 64 on 8 GPUs.** Half the effective batch
+   changes BN statistics and the OneCycleLR step count. The recipe notes this.
+3. **30 epochs.** Appendix 8.1 does not fix a detection epoch count (Table 4
+   uses time-to-convergence); the mAP was still creeping up at ep29.
+4. **Metric.** Our `eval_detect` reports mAP@0.5 (VOC-style, single IoU 0.5);
+   the `mAP@0.5:0.95` field duplicates it (no COCO 0.5–0.95 averaging is done).
+   The paper's VOC table is mAP@0.5, so this is the right number to compare.
+
+The collapse fix (the goal of this branch) is verified; closing the absolute
+gap is a training-recipe task, not a quantization-correctness task.
 
 ## Short-smoke isolation (75 steps, 200 VOC test imgs)
 
