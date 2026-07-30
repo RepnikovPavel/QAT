@@ -173,18 +173,26 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
         nb += 1
 
         if (it % log_every) == 0:
-            # Objectness-head health probe: raw obj-sigmoid max per scale. When
-            # the head collapses (issue #4) this drops to ~0.001/0.005/0.106 vs
-            # a healthy ~0.75, so NMS keeps nothing and mAP=0. Tracking it here
-            # surfaces a collapse within a few steps instead of at eval time.
-            # yolov5 train output per scale: [B, na, ny, nx, 5+nc]; obj is [...,4].
+            # Objectness-head health probe: raw obj-sigmoid max on EACH of the 3
+            # detection scales. A true collapse (issue #4) drives ALL three to
+            # ~0.001/0.005/0.106 (NMS keeps nothing -> mAP=0); a healthy head
+            # keeps at least the small-object scale (idx 0) well above 0.1 as
+            # training proceeds. NOTE: a fresh Detect head is randomly init'd
+            # (pretrained transfer skips det.model.24.* because COCO nc=80 != VOC
+            # nc=20), so the max-obj starts LOW everywhere and only recovers as
+            # the head adapts — a low early omax is normal, a PERMANENTLY near-
+            # zero omax across all scales is the failure signature.
+            # yolov5 train output per scale: [B, na, ny, nx, 5+nc]; obj at [...,4].
             objtag = ""
             if monitor_obj and isinstance(preds, (list, tuple)) and len(preds) >= 1:
                 try:
-                    p0 = preds[0].detach()
-                    if p0.dim() >= 2:
-                        omax = float(p0[..., 4].sigmoid().max())
-                        objtag = f" omax0={omax:.3f}"
+                    omax = []
+                    for pi in preds:
+                        if pi.dim() >= 2:
+                            omax.append(f"{float(pi.detach()[..., 4].sigmoid().max()):.3f}")
+                        else:
+                            omax.append("nan")
+                    objtag = " omax=" + "/".join(omax)
                 except Exception:
                     pass
             print(f"[ep {epoch} it {it}/{len(loader)}] "
