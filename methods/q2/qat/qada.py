@@ -154,24 +154,35 @@ class QADALoss(nn.Module):
     def forward(
         self,
         x_teacher: torch.Tensor,
-        xb_student: torch.Tensor,
+        x_student_fp: torch.Tensor,
+        x_student_q: torch.Tensor,
         step: Optional[torch.Tensor] = None,
         temp: Optional[float] = None,
     ) -> torch.Tensor:
-        """Q-ADA loss.
+        """Q-ADA loss (Eq. 13-16), verbatim interpretation.
+
+        For a feature X the saliency S(X) uses the quantization distortion
+        Delta = |X - Q(X)| of THAT SAME feature (Eq. 13), not a teacher-vs-
+        student difference. Hence:
+          * teacher (FP): its feature is never quantized, so Q(X)=X and
+            Delta=0 -> S uses only the statistical z-term (Eq. 15).
+          * student (quant): X = its FP feature, Q(X) = its quantized feature,
+            both captured at the same supervision point.
 
         Args:
-            x_teacher: full-precision teacher feature (detached supervision).
-            xb_student: quantized student feature (carries gradient).
+            x_teacher: FP teacher feature (detached; its own distortion is 0).
+            x_student_fp: student FP feature (detached; supplies mu/sigma/z/Delta).
+            x_student_q: student quantized feature (the Q(X) above; carries grad).
             step: per-channel quantization step ``s_c`` (Eq. 14). May be None.
             temp: sigmoid temperature for the attention map.
         """
-        # Eq. 16 (paper line 215): the attention weight is A~ = Sigmoid(S),
-        # then normalised to a spatial probability distribution
-        # P_{c,ij} = A~_{c,ij} / sum A~_{c,i'j'}. We follow the paper verbatim
-        # (L1-normalise the sigmoid map, not a softmax over the raw score).
-        S_t = raw_saliency(x_teacher.detach(), x_teacher.detach(), step, self.gamma, self.k)
-        S_s = raw_saliency(x_teacher.detach(), xb_student, step, self.gamma, self.k)
+        # Eq. 16 (paper line 215): A~ = Sigmoid(S); distribution P = A~/sum(A~).
+        # Teacher Delta = 0 (FP), so Q(X)=X.
+        x_teacher = x_teacher.detach()
+        x_student_fp = x_student_fp.detach()
+        S_t = raw_saliency(x_teacher, x_teacher, step, self.gamma, self.k)
+        # Student: X = x_student_fp, Q(X) = x_student_q.
+        S_s = raw_saliency(x_student_fp, x_student_q, step, self.gamma, self.k)
         t = self.temp if temp is None else temp
         A_t = torch.sigmoid(S_t / max(t, 1e-6))
         A_s = torch.sigmoid(S_s / max(t, 1e-6))

@@ -108,10 +108,14 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
     running = {"loss": 0.0, "box": 0.0, "obj": 0.0, "cls": 0.0, "qada": 0.0}
     nb = 0
 
-    # Q-ADA feature-supervision: capture the backbone SPPF output (layer 9 of
-    # yolov5s) from the student and the frozen FP teacher at the same point,
-    # then align their saliency distributions (paper Sec. 3.3, Eq. 13-16).
-    student_feats, teacher_feats = {}, {}
+    # Q-ADA feature-supervision point = the SPPF output (yolov5s layer 9), the
+    # last backbone feature before the neck. Per Eq.13-16 the distortion is
+    # Delta = |X - Q(X)| on the SAME feature, so we need, for the student:
+    #   X    = its FP feature at the supervision point (= SPPF output),
+    #   Q(X) = that feature after the neck's first quantized conv quantises it.
+    # We grab the teacher's FP feature at the same point (its Delta is 0).
+    teacher_feats = {}
+    student_supervision = None  # set to the quantized conv right after SPPF
 
     def _make_hook(store, key):
         def hook(_mod, _inp, out):
@@ -120,9 +124,14 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
 
     handles = []
     if qada_loss is not None and qada_teacher is not None:
-        # SPPF is layer index 9 in yolov5s (last backbone stage before the neck).
-        handles.append(model.model[9].register_forward_hook(_make_hook(student_feats, "sppf")))
-        handles.append(qada_teacher.model[9].register_forward_hook(_make_hook(teacher_feats, "sppf")))
+        handles.append(qada_teacher.model[9].register_forward_hook(
+            _make_hook(teacher_feats, "sppf")))
+        # Student: hook SPPF output for X_fp; ask the following quantized conv
+        # to capture its pre/post-quant input (which IS the SPPF feature).
+        handles.append(model.model[9].register_forward_hook(
+            _make_hook(teacher_feats, "student_sppf")))
+        student_supervision = model.model[10]
+        student_supervision.capture_acts = True
 
     try:
       for it, (imgs, targets) in enumerate(loader):
@@ -144,14 +153,22 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
             loss, items = compute_loss(preds, tg)
             total = loss
 
-        # Q-ADA: align the student's quantized feature against the frozen FP
-        # teacher at the shared SPPF supervision point (Eq. 13-16).
+        # Q-ADA (Eq. 13-16): align teacher and student saliency at the shared
+        # SPPF supervision point. Delta = |X - Q(X)| on the SAME feature:
+        #   teacher  : FP feature x_t (Delta=0).
+        #   student  : X = its FP feature (SPPF out), Q(X) = the quantized
+        #              version captured by the neck's first quantized conv.
         qada_val = 0.0
-        if qada_loss is not None and qada_teacher is not None and "sppf" in student_feats:
-            xt = teacher_feats["sppf"]            # FP teacher feature (detached)
-            xs = student_feats["sppf"]            # quantized student feature
-            total = total + qada_weight * qada_loss(xt, xs)
-            qada_val = float(qada_loss(xt, xs).detach())
+        if (qada_loss is not None and qada_teacher is not None
+                and "sppf" in teacher_feats and "student_sppf" in teacher_feats
+                and student_supervision is not None
+                and student_supervision._last_x_q is not None):
+            x_t = teacher_feats["sppf"]                       # teacher FP feature
+            x_s_fp = teacher_feats["student_sppf"]            # student FP feature (X)
+            x_s_q = student_supervision._last_x_q             # student Q(X)
+            loss_qada = qada_loss(x_t, x_s_fp, x_s_q)
+            total = total + qada_weight * loss_qada
+            qada_val = float(loss_qada.detach())
 
         # Gradient accumulation: scale the loss so the accumulated gradient
         # matches a single step at the effective (batch*accum) batch size.
@@ -226,6 +243,8 @@ def train_one_epoch(model, loader, optimizer, scheduler, compute_loss,
     finally:
         for h in handles:
             h.remove()
+        if student_supervision is not None:
+            student_supervision.capture_acts = False
 
     n = max(nb, 1)
     for k in running:

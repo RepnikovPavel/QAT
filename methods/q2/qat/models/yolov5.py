@@ -74,10 +74,20 @@ class _QuantizedConv(nn.Module):
         self.act = conv_module.act
         self.w_quant = w_quant
         self.a_quant = a_quant
+        # When capture_acts is True the layer stashes its pre-quant (FP) and
+        # post-quant input activations so Q-ADA can compute Eq.13 distortion
+        # Delta = |X - Q(X)| on the SAME activation (not teacher-vs-student).
+        self.capture_acts = False
+        self._last_x_fp = None
+        self._last_x_q = None
 
     def forward(self, x):
         if self.a_quant is not None:
-            x = self.a_quant(x)
+            x_q = self.a_quant(x)
+            if self.capture_acts:
+                self._last_x_fp = x.detach()
+                self._last_x_q = x_q.detach()
+            x = x_q
         w = self.conv.weight
         if self.w_quant is not None:
             w = self.w_quant(w)

@@ -178,9 +178,9 @@ def test_saliency_shape():
 
 
 def test_qada_zero_when_identical():
-    """Teacher == student feature -> near-zero divergence."""
+    """Teacher == student feature and no quantization distortion -> ~0 loss."""
     x = torch.randn(2, 8, 12, 12)
-    loss = QADALoss()(x, x.clone(), step=torch.tensor(0.5))
+    loss = QADALoss()(x, x.clone(), x.clone(), step=torch.tensor(0.5))
     assert loss.item() < 1e-4
 
 
@@ -202,7 +202,9 @@ def test_qada_positive_when_distorted():
     xb = x.clone()
     xb[:, :, 4:8, 4:8] *= 0.3  # quantization suppresses the salient region
     xb += torch.randn_like(xb) * 0.05
-    loss = QADALoss()(x, xb, step=torch.tensor(0.5))
+    # new signature: (teacher FP, student FP, student Q, step). Here teacher
+    # and the student's FP feature coincide (both `x`); `xb` is Q(X).
+    loss = QADALoss()(x, x, xb, step=torch.tensor(0.5))
     assert loss.item() > 0.0
 
 
@@ -215,15 +217,15 @@ def test_qada_monotone_in_distortion():
         xb = x.clone()
         xb[:, :, 4:8, 4:8] *= (1.0 - 0.3 * scale)
         xb += torch.randn_like(xb) * (0.05 + scale)
-        losses.append(QADALoss()(x, xb, step=torch.tensor(0.5)).item())
+        losses.append(QADALoss()(x, x, xb, step=torch.tensor(0.5)).item())
     assert losses[0] < losses[1] < losses[2]
 
 
 def test_qada_js_vs_kl():
     x = torch.randn(2, 8, 12, 12)
     xb = x + torch.randn_like(x)
-    l_js = QADALoss(divergence="js")(x, xb)
-    l_kl = QADALoss(divergence="kl")(x, xb)
+    l_js = QADALoss(divergence="js")(x, x, xb)
+    l_kl = QADALoss(divergence="kl")(x, x, xb)
     assert l_js.item() > 0 and l_kl.item() > 0
 
 
