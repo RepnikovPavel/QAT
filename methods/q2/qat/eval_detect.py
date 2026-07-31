@@ -46,7 +46,7 @@ def _process_batch(detections, labels, iouv):
     for i in range(len(iouv)):
         x = torch.where((iou >= iouv[i]) & correct_class.T)  # (det_idx, gt_idx)
         if x[0].shape[0]:
-            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1)
+            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu()
             matches = matches[matches[:, 2].argsort(descending=True)]
             matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
             matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
