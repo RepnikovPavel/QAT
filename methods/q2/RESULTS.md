@@ -107,6 +107,15 @@ Bugs found and fixed during M1 bring-up:
 > recovered by fixing Δ — Q-GBFusion+Q-ADA as wired here do not improve mAP over
 > plain LSQ QAT in this setup. The gap to absolute targets (FP 0.792 vs 0.859;
 > LSQ 0.652 vs 0.769) is separate (effective batch / epochs).
+>
+> Re-reading paper line 293 + Table 4: Q-GBFusion gives +1.4-1.5% (gradient
+> stability), and Q-ADA's main effect is FASTER CONVERGENCE ("substantially
+> reduces training time") + only +0.3-0.7% accuracy. Table 4 reports
+> time-to-convergence with validation-based early stopping, NOT fixed epochs.
+> So on a fixed 30-epoch budget Q² may legitimately show ~0 mAP delta — its +2.0
+> in Table 1 is measured under the paper's own (early-stop / budget) protocol.
+> This is the leading hypothesis for our 0 delta; verifying it needs the same
+> convergence protocol (not fixed 30 epochs).
 
 
 ### Gap to the paper targets — honest accounting
