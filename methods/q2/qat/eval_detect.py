@@ -33,13 +33,36 @@ def _iou_matrix(boxes1, boxes2):
     return inter / (area1[:, None] + area2[None, :] - inter + 1e-7)
 
 
+def _process_batch(detections, labels, iouv):
+    """Return the correct-prediction matrix, verbatim from yolov5/val.py.
+
+    ``detections`` (N,6) = [x1,y1,x2,y2,conf,cls]; ``labels`` (L,5) = [cls,x1,y1,x2,y2].
+    Returns a bool matrix (N, n_iou): for each detection whether it is a TP at
+    each of the ``iouv`` IoU thresholds (matched GT chosen by descending IoU).
+    """
+    correct = np.zeros((detections.shape[0], iouv.numel())).astype(bool)
+    iou = _iou_matrix(detections[:, :4], labels[:, 1:5])
+    correct_class = labels[:, 0:1] == detections[:, 5]  # (L, N)
+    for i in range(len(iouv)):
+        x = torch.where((iou >= iouv[i]) & correct_class.T)  # (det_idx, gt_idx)
+        if x[0].shape[0]:
+            matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1)
+            matches = matches[matches[:, 2].argsort(descending=True)]
+            matches = matches[np.unique(matches[:, 1], return_index=True)[1]]
+            matches = matches[np.unique(matches[:, 0], return_index=True)[1]]
+            correct[matches[:, 0].long(), i] = True
+    return torch.tensor(correct, dtype=torch.bool, device=iouv.device)
+
+
 def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
              nms_thres=0.6, max_det=300, img_size=640):
-    """Compute mAP@0.5 over the loader."""
+    """Compute mAP@0.5 (and 0.5:0.95) over the loader, matching yolov5/val.py."""
     from yolov5.utils.general import non_max_suppression
     from yolov5.utils.metrics import ap_per_class
 
     model.eval()
+    # IoU vector for mAP@0.5:0.95 (yolov5/val.py line 177).
+    iouv = torch.linspace(0.5, 0.95, 10, device=device)
     stats = []
     seen = 0
     with torch.no_grad():
@@ -66,48 +89,23 @@ def evaluate(model, loader, device, nc=20, iou_thres=0.5, conf_thres=0.001,
                     labels_cls = torch.zeros((0, 1), device=device)
                 if det is None or len(det) == 0:
                     if nl:
-                        stats.append((torch.zeros(0), torch.zeros(0),
-                                      torch.zeros(0), torch.tensor(tcls)))
+                        stats.append((torch.zeros((0, iouv.numel()), dtype=torch.bool),
+                                      torch.zeros(0), torch.zeros(0), torch.tensor(tcls)))
                     continue
                 det = det.to(device)
                 dbox = det[:, :4]
                 dconf = det[:, 4]
-                dcls = det[:, 5].long()
-                # match
-                if nl:
-                    # Sort detections by DESCENDING confidence before greedy
-                    # IoU matching (the PASCAL-VOC / YOLOv5 convention): a
-                    # higher-confidence box must get the first chance to claim a
-                    # ground-truth box, otherwise low-conf boxes steal GTs and
-                    # deflate mAP. This was missing and caused our mAP to read
-                    # ~0.32 below the official yolov5 val on the same ckpt.
-                    order = dconf.argsort(descending=True)
-                    dbox = dbox[order]
-                    dconf = dconf[order]
-                    dcls = dcls[order]
-                    # tp shape (n_pred, 1) as expected by yolov5 ap_per_class
-                    correct = torch.zeros((dbox.shape[0], 1), dtype=torch.float32, device=device)
-                    iou = _iou_matrix(dbox, tbox)
-                    # for each class
-                    for c in torch.unique(torch.tensor(tcls, device=device)):
-                        ti = (labels_cls[:, 0] == c).nonzero().view(-1)
-                        di = (dcls == c).nonzero().view(-1)
-                        if len(ti) and len(di):
-                            m = iou[di][:, ti].cpu()
-                            if m.numel():
-                                x = torch.where(m >= iou_thres)
-                                if x[0].numel():
-                                    matched = set()
-                                    for j, k in zip(*x):
-                                        if k.item() not in matched:
-                                            correct[di[j], 0] = 1.0
-                                            matched.add(k.item())
-                                            break
-                    stats.append((correct.cpu(), dconf.cpu(), dcls.cpu(),
-                                  torch.tensor(tcls)))
-                else:
-                    stats.append((torch.zeros((dbox.shape[0], 1)),
-                                  dconf.cpu(), dcls.cpu(), torch.tensor([])))
+                dcls = det[:, 5]
+                # Build the correct matrix EXACTLY like yolov5/val.py process_batch
+                # (10 IoU thresholds 0.5..0.95, match by descending IoU). Our earlier
+                # hand-rolled matching (1 IoU column, match in detection order)
+                # underread mAP by ~0.32 vs the official val on the same ckpt.
+                # detections layout for _process_batch: [xyxy, conf, cls]
+                detn = torch.cat([dbox, dconf[:, None], dcls[:, None]], 1)
+                labelsn = torch.cat([labels_cls, tbox], 1)  # (L,5) [cls, xyxy]
+                correct = _process_batch(detn, labelsn, iouv)
+                stats.append((correct.cpu(), dconf.cpu(), dcls.cpu(),
+                              torch.tensor(tcls)))
                 seen += 1
 
     if not stats:
