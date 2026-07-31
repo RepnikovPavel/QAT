@@ -91,7 +91,8 @@ Bugs found and fixed during M1 bring-up:
 | --- | --- | --- |
 | FP YOLOv5s (official yolov5 train, our eval) | **mAP@0.5 = 0.792** | 0.859 |
 | Baseline (LSQ W4A4, 30 ep, bs32×accum2, warm FP init) | **mAP@0.5 = 0.652** | 0.769 |
-| + Q² (Q-GBFusion + Q-ADA) | **mAP@0.5 = 0.651** | 0.789 (+2.0) |
+| + Q² (Q-GBFusion + Q-ADA, OLD Δ=teacher−student) | **mAP@0.5 = 0.651** | 0.789 (+2.0) |
+| + Q² (Q-GBFusion + Q-ADA, Eq13 Δ=\|X−Q(X)\|) | **mAP@0.5 = 0.650** | 0.789 (+2.0) |
 
 > NOTE on the eval fix: an earlier version of this table reported 0.449/0.440 —
 > that was a bug in `eval_detect` (1-IoU-column matching in detection order
@@ -99,6 +100,14 @@ Bugs found and fixed during M1 bring-up:
 > verbatim, the same FP checkpoint reads 0.792 (vs the official `yolov5 val`
 > 0.827 — the ~0.035 residual is our square-letterbox preprocess vs official
 > rect inference). All numbers above use the corrected eval.
+
+> NOTE on the Q² delta (A/B): both Q-ADA variants (the wrong Δ=teacher−student
+> AND the verbatim Eq13 Δ=|X−Q(X)|) give **~0 gain over the LSQ baseline**
+> (0.651 / 0.650 vs 0.652). The paper reports +2.0. So the Q² delta is NOT
+> recovered by fixing Δ — Q-GBFusion+Q-ADA as wired here do not improve mAP over
+> plain LSQ QAT in this setup. The gap to absolute targets (FP 0.792 vs 0.859;
+> LSQ 0.652 vs 0.769) is separate (effective batch / epochs).
+
 
 ### Gap to the paper targets — honest accounting
 
