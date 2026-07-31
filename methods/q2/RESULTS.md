@@ -87,43 +87,33 @@ Bugs found and fixed during M1 bring-up:
    is merely cold-starting (it is randomly init'd because COCO nc=80 ≠ VOC
    nc=20), not dead.
 
-| Run | ours | paper |
+| Run | ours (corrected eval) | paper |
 | --- | --- | --- |
-| Baseline (LSQ W4A4, 30 ep, bs32, 1×4090) | **mAP@0.5 = 44.9** (full VOC test, 4131 img) | 76.9 |
-| + Q² (Q-GBFusion + Q-ADA) | after baseline gap is closed | 78.9 (+2.0) |
+| FP YOLOv5s (official yolov5 train, our eval) | **mAP@0.5 = 0.792** | 0.859 |
+| Baseline (LSQ W4A4, 30 ep, bs32×accum2, warm FP init) | **mAP@0.5 = 0.652** | 0.769 |
+| + Q² (Q-GBFusion + Q-ADA) | **mAP@0.5 = 0.651** | 0.789 (+2.0) |
 
-### Baseline mAP trajectory (LSQ W4A4, eval on 300 VOC test img)
+> NOTE on the eval fix: an earlier version of this table reported 0.449/0.440 —
+> that was a bug in `eval_detect` (1-IoU-column matching in detection order
+> instead of the yolov5/val.py `process_batch`). After rewriting the matching
+> verbatim, the same FP checkpoint reads 0.792 (vs the official `yolov5 val`
+> 0.827 — the ~0.035 residual is our square-letterbox preprocess vs official
+> rect inference). All numbers above use the corrected eval.
 
-| ckpt | mAP@0.5 | precision | recall |
-| --- | --- | --- | --- |
-| 75 steps | 0.035 | 0.04 | 0.25 |
-| ep4 | 0.39 | 0.62 | 0.73 |
-| ep6 | 0.43 | 0.83 | 0.86 |
-| ep9 | 0.44 | 0.86 | 0.81 |
-| ep29 (full test, 4131 img) | **0.449** | 0.73 | 0.70 |
+### Gap to the paper targets — honest accounting
 
-### Gap to the paper target (76.9) — honest accounting
+The collapse is fixed and the eval is now faithful (FP within 0.035 of the
+official val). Remaining gaps (LSQ 0.652 vs 0.769; Q² gives ~0 delta vs +2.0):
 
-The collapse is fixed (mAP rises monotonically 0.035 → 0.449; the pre-fix run
-was a hard 0), but the absolute number is ~32 points below the paper. Known,
-fixable differences from the paper setup, in rough order of impact:
-
-1. **Cold-start Detect head.** COCO nc=80 ≠ VOC nc=20, so the pretrained
-   transfer skips `det.model.24.*` and the head trains from random init,
-   burning epochs just to recover. The paper's "initialized from full-precision
-   pretrained checkpoints" (Appendix 8.1) likely transfers a head too (or
-   pre-trains the head on VOC FP first). Next step: a short FP head-only warmup,
-   or transfer the head class-subset where shapes allow.
-2. **Batch 32 on 1 GPU vs paper batch 64 on 8 GPUs.** Half the effective batch
-   changes BN statistics and the OneCycleLR step count. The recipe notes this.
-3. **30 epochs.** Appendix 8.1 does not fix a detection epoch count (Table 4
-   uses time-to-convergence); the mAP was still creeping up at ep29.
-4. **Metric.** Our `eval_detect` reports mAP@0.5 (VOC-style, single IoU 0.5);
-   the `mAP@0.5:0.95` field duplicates it (no COCO 0.5–0.95 averaging is done).
-   The paper's VOC table is mAP@0.5, so this is the right number to compare.
-
-The collapse fix (the goal of this branch) is verified; closing the absolute
-gap is a training-recipe task, not a quantization-correctness task.
+1. **Q-ADA is effectively inert.** Eq. 16 builds the distribution as
+   `Ã=Sigmoid(S)` then L1-normalises; for a strong saliency peak S saturates
+   sigmoid, so teacher/student distributions nearly coincide and JS≈0 (verified
+   in the unit test). The Q-ADA term contributes ~0 to training, so Q² reduces
+   to Q-GBFusion alone here. The paper does not give γ/κ, so the S-scale that
+   avoids sigmoid saturation is unknown — a candidate fix.
+2. **Effective batch.** grad-accum=2 gives an effective 64 but BatchNorm
+   statistics still see 32, unlike the paper's true 64.
+3. **30 epochs** (the paper does not fix a detection epoch count).
 
 ## Short-smoke isolation (75 steps, 200 VOC test imgs)
 
